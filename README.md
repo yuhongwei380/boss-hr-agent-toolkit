@@ -216,12 +216,13 @@ EOF
 
 ## 🛡️ 安全规则
 
-### 推荐牛人下载（新增）
+### 推荐牛人下载
 
+- ✅ **真实浏览器 TLS 指纹**：通过 patchright 在 Edge 内 fetch，服务器无法区分真人
 - ✅ 滚动延迟 3-6 秒随机（模拟真人浏览）
-- ✅ 简历获取 5-20 秒随机（模拟真人阅读）
+- ✅ 简历获取 5-15 秒随机（模拟真人阅读）
 - ✅ 建议工作时间运行（9:00-18:00）
-- ✅ 单次建议不超过 100 人
+- ✅ 单次建议不超过 50 人，超过则分批次
 
 ### 通用规则
 
@@ -261,12 +262,13 @@ boss-hr-agent-toolkit/
 │   ├── scripts/sync_boss_resumes.py
 │   └── references/
 │
-├── boss-recommend-downloader/       # Step 2B：推荐牛人简历下载（新增）
+├── boss-recommend-downloader/       # Step 2B：推荐牛人简历下载
 │   ├── SKILL.md
 │   ├── README.md
 │   └── scripts/
 │       ├── recommend_list.py         # 获取候选人列表
-│       ├── recommend_download.py     # 批量获取简历
+│       ├── recommend_download_v2.py  # 批量获取简历（主方案：patchright + fetch）
+│       ├── recommend_download.py     # 批量获取简历（备用：CLI，开发者参考）
 │       └── run_all.py               # 一键运行
 │
 ── boss-hr-auto/                    # 🚪 全流程编排（唯一入口）
@@ -293,11 +295,13 @@ boss-hr-agent-toolkit/
 └── <岗位名>/
     ├── <岗位名>_简历筛选报告.html   # 最终 HTML 报告
     └── process/                     # 过程文件（留痕查阅）
-        ├── job_detail.json
-        ├── recommend_geek_ids.json
-        ├── test_resumes.json
-        ├── screening_results.json
-        └── failed_resumes.json
+        ├── job_detail.json             # JD 数据
+        ├── batch_N_ids.json            # 第 N 批候选人 ID
+        ├── batch_N_resumes.json        # 第 N 批简历
+        ├── test_resumes.json           # 累计所有简历
+        ├── recommend_geek_ids.json     # 累计所有候选人 ID
+        ├── screening_results.json      # 评分结果
+        └── batch_state.json            # 分批进度
 ```
 
 **重要规则：**

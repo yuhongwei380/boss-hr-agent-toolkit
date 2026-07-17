@@ -179,7 +179,7 @@ python scripts/sync_boss_resumes.py sync-job --job-id <jobId> --max 10
 
 ---
 
-## Step 2B: 从推荐牛人页面下载简历（新增）
+## Step 2B: 从推荐牛人页面下载简历
 
 **执行 skill：** `boss-recommend-downloader`
 
@@ -187,17 +187,25 @@ python scripts/sync_boss_resumes.py sync-job --job-id <jobId> --max 10
 
 **核心操作：**
 ```bash
-# 一键运行（推荐）
-python scripts/run_all.py --job-name "车架工程师"
+# 分批运行（推荐，不刷新页面，顺序固定）
+python scripts/recommend_list.py --job-name "车架工程师" --batch-size 25 --batch 1
+python scripts/recommend_download_v2.py --job-name "车架工程师" --batch 1
+# 评分后继续下一批
+python scripts/recommend_list.py --job-name "车架工程师" --batch-size 25 --batch 2
+python scripts/recommend_download_v2.py --job-name "车架工程师" --batch 2
 
-# 或分步运行
-python scripts/recommend_list.py --job-name "车架工程师"  # Step 1: 获取候选人列表
-python scripts/recommend_download.py --job-name "车架工程师"  # Step 2: 下载简历
+# 或一次性运行
+python scripts/recommend_list.py --job-name "车架工程师"
+python scripts/recommend_download_v2.py --job-name "车架工程师"
 ```
 
+> **注意**：`recommend_download_v2.py` 使用 patchright + 浏览器 fetch 方案（真实 Edge TLS 指纹），
+> 替代了旧版 `recommend_download.py` 的 CLI 方案。详见 `boss-recommend-downloader` skill。
+
 **安全策略：**
+- TLS 指纹：真实 Edge 浏览器（服务器无法区分）
 - 滚动延迟：3-6 秒随机（模拟真人浏览）
-- 简历获取：5-20 秒随机（模拟真人阅读）
+- 简历获取：5-15 秒随机（模拟真人阅读）
 - 运行时间：建议工作时间（9:00-18:00）
 
 **输出：** 候选人列表 + 完整简历数据，保存到 `process/` 文件夹。
