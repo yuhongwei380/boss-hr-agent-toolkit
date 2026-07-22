@@ -1,20 +1,60 @@
-# BOSS 直聘 HR 智能体技能包
+# BOSS 直聘 · HR 智能体技能包
 
-> 7 个 AI 智能体 Skill，基于 [boss-agent-cli](https://github.com/can4hou6joeng4/boss-agent-cli)，实现 BOSS 直聘简历筛选全流程自动化。
+> [!NOTE]
+> 由 **7 个 AI 智能体 Skill** 组成，基于 [boss-agent-cli](https://github.com/can4hou6joeng4/boss-agent-cli) 实现 BOSS 直聘简历筛选的**全流程自动化**：从岗位到可视化报告，一键搞定。
 
-## 🎯 功能概述
-
-```
-你有一个岗位 → AI 自动提取 JD → 自动下载候选人简历 → 自动评分排名 → 输出可视化报告 + 沟通建议
-```
-
-**一句话：** AI 帮你从几十个候选人中，几分钟筛出最匹配的那几个，并告诉你该和每个人聊什么。
+<p align="center">
+  <img alt="skills" src="https://img.shields.io/badge/skills-7%20agents-blue">
+  <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-blue">
+  <img alt="platform" src="https://img.shields.io/badge/platform-BOSS%20直聘-orange">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
+</p>
 
 ---
 
-##  Skill 一览
+## 📑 目录
 
-> **🚪 `boss-hr-auto` 是唯一入口**，其余 Skill 是其子步骤。使用时始终从 boss-hr-auto 开始。
+- [✨ 这是什么](#-这是什么)
+- [🎯 核心能力](#-核心能力)
+- [🧩 技能一览与工作流](#-技能一览与工作流)
+- [🚀 快速开始](#-快速开始)
+- [🧠 评分系统](#-评分系统)
+- [🛡️ 安全与风控](#️-安全与风控)
+- [📂 项目结构](#-项目结构)
+- [📤 输出文件](#-输出文件)
+- [⚙️ 环境变量](#️-环境变量)
+- [🔗 相关链接](#-相关链接)
+
+---
+
+## ✨ 这是什么
+
+你有一个岗位，剩下的交给 AI：
+
+```
+   岗位          →   AI 自动提取 JD   →   自动下载候选人简历   →   自动评分排名   →   可视化报告 + 沟通建议
+(一句话需求)        (boss-job-detail)      (recommend / 沟通列表)     (resume-screener)     (html-report)
+```
+
+**一句话概括：** AI 帮你在几十份简历中，几分钟内筛出最匹配的那几个，并告诉你该和每个人聊什么。
+
+---
+
+## 🎯 核心能力
+
+| 能力 | 说明 |
+|:----:|------|
+| 🔍 **JD 提取** | 一键抓取岗位详情、任职要求与核心技能点 |
+| 📥 **简历获取** | 支持「沟通列表」与「推荐牛人」两条路径，真实浏览器指纹，低风控 |
+| 🧮 **智能评分** | 5 维度加权评分 + 学历分档校准，硬门槛过滤 |
+| 📊 **可视化报告** | 排名表 + 五维雷达图 + 个性化沟通建议，HTML 一键生成 |
+| 🧪 **可测试** | 核心算法由 `tests/` 单元测试用例覆盖 |
+
+> **🚪 `boss-hr-auto` 是唯一入口**，其余 Skill 是其子步骤。使用时始终从 `boss-hr-auto` 开始。
+
+---
+
+## 🧩 技能一览与工作流
 
 | # | Skill | 角色 | 作用 |
 |:-:|------|:----:|------|
@@ -22,65 +62,30 @@
 | 1 | boss-agent-cli | 📖 参考 | BOSS CLI 命令手册（被其他 Skill 引用） |
 | 2 | boss-job-detail | Step 1 | 提取岗位 JD |
 | 3A | boss-resume-downloader | Step 2A | 从沟通列表下载候选人简历 |
-| 3B | **boss-recommend-downloader** | Step 2B | 从推荐牛人页面获取完整简历（新增） |
+| 3B | **boss-recommend-downloader** | Step 2B | 从推荐牛人页面获取完整简历 |
 | 4 | resume-screener | Step 3 | 硬门槛过滤 + 加权评分 + 学历分档 |
 | 5 | html-report | Step 4 | 生成可视化 HTML 报告 + 沟通建议 |
 
-### 工作流
+### 工作流示意图
 
-本工具包提供**两条简历获取路径**：
-
-#### 路径 A：从沟通列表下载简历
-
-```
-用户：「帮我筛选这个岗位」
-     │
-     ▼
-┌───────────────────────────────────────────────
-│              boss-hr-auto（总控入口）            │
-│                                                │
-│  [Step 0] 验证 CLI 登录（`boss me` + `hr jobs list`）│
-│  [Step 1] boss-job-detail        → 提取 JD     │
-│  [Step 2A] boss-resume-downloader  → 下载简历  │
-│  [Step 3] resume-screener        → 评分排名    │
-│  [Step 4] html-report            → 生成报告    │
-│                                                │
-│  参考：boss-agent-cli（CLI 命令手册）              │
-└───────────────────────────────────────────────┘
-     │
-     ▼
- HTML 报告（含排名 + 5 维度评分依据 + 个性化行动建议）
-```
-
-#### 路径 B：从推荐牛人页面下载简历（新增）
-
-```
-用户：「帮我筛选推荐牛人」
-     │
-     ▼
-┌───────────────────────────────────────────────┐
-│              boss-hr-auto（总控入口）            │
-│                                                │
-│  [Step 0] 验证 CLI 登录（`boss me` + `hr jobs list`）│
-│  [Step 1] boss-job-detail        → 提取 JD     │
-│  [Step 2B] boss-recommend-downloader → 下载简历│
-│  [Step 3] resume-screener        → 评分排名    │
-│  [Step 4] html-report            → 生成报告    │
-│                                                │
-│  参考：boss-agent-cli（CLI 命令手册）              │
-└───────────────────────────────────────────────┘
-     │
-     ▼
- HTML 报告（含排名 + 5 维度评分依据 + 个性化行动建议）
+```mermaid
+flowchart LR
+    A[岗位需求] --> B[boss-job-detail<br/>提取 JD]
+    B --> C{简历来源}
+    C -->|沟通列表| D1[boss-resume-downloader]
+    C -->|推荐牛人| D2[boss-recommend-downloader]
+    D1 --> E[resume-screener<br/>评分排名]
+    D2 --> E
+    E --> F[html-report<br/>可视化报告 + 沟通建议]
 ```
 
 ---
 
 ## 🚀 快速开始
 
-### 前置依赖
-
 > **无需打包任何二进制文件。** 以下全部通过包管理器安装，浏览器用系统自带的即可。
+
+### 前置依赖
 
 | 依赖 | 说明 | 安装方式 |
 |------|------|---------|
@@ -141,11 +146,12 @@ cat > ~/.boss-agent/config.json << 'EOF'
 EOF
 ```
 
-> ⚠️ **必须关闭**：`low_risk_mode` 默认开启会阻止简历获取。
+> [!WARNING]
+> **必须关闭**：`low_risk_mode` 默认开启会阻止简历获取。
 
-### 5. 使用
+### 5. 开始使用
 
-在智能体中：
+在智能体中调用：
 
 ```
 @skill://boss-hr-auto 车架工程师
@@ -163,7 +169,8 @@ EOF
 
 ### 当前权重（5 维加权求和）
 
-> **注:** 旧版文档曾设计「技术岗 / 管培岗」两套权重。当前 `resume-screener/scripts/score_resumes.py` 已统一为单套 5 维权重（和 = 100%）。如需区分岗位类型,建议在 `WEIGHTS` 常量上扩展,不要直接硬编码两套。
+> [!NOTE]
+> 当前 `resume-screener/scripts/score_resumes.py` 已统一为**单套 5 维权重**（合计 100%）。如需区分岗位类型，建议在 `WEIGHTS` 常量上扩展，不要直接硬编码多套。
 
 | 维度 | 权重 | 评分方法 |
 |------|:----:|---------|
@@ -177,8 +184,8 @@ EOF
 
 - `weighted[d] = round(dims[d] * WEIGHTS[d], 2)`
 - `total = round(sum(weighted.values()), 1)`
-- 档位阈值: `>= 70` → **推荐**　`>= 60` → **待定**　否则 → **不推荐**
-- 全部逻辑在 `resume-screener/scripts/score_resumes.py`，由 `tests/` 下的 51 个单测覆盖：`python -m pytest tests/`
+- 档位阈值：`>= 70` → **推荐**　`>= 60` → **待定**　否则 → **不推荐**
+- 全部逻辑在 `resume-screener/scripts/score_resumes.py`，由 `tests/` 下的单元测试用例覆盖：`python -m pytest tests/`
 
 ### 学历分档表
 
@@ -192,30 +199,30 @@ EOF
 | 二本公办 | 62 | 普通公办二本 |
 | 民办本科 | 53 | 民办高校、独立学院 |
 
-**️ 学历评分必须严格执行分档表，禁止给所有人相同分数。**
+> [!IMPORTANT]
+> 学历评分必须严格执行分档表，**禁止给所有人相同分数**。
 
-### 输出格式
+### 行动建议规则
 
-```
-📊 排名表（含 5 维加权分）+ 📋 每人评分依据 + 🎯 个性化行动建议（推荐/待沟通含沟通策略）
-```
+输出格式：`📊 排名表（含 5 维加权分）+ 📋 每人评分依据 + 🎯 个性化行动建议`
 
-**️ 行动建议必须个性化：**
-- 推荐面试：每人必须写「候选人背景」+「沟通方向」
-- 待沟通确认：每人必须写「优势」+「需确认问题」
-- 禁止所有人一样的沟通方向
+- **推荐面试**：每人必须写「候选人背景」+「沟通方向」
+- **待沟通确认**：每人必须写「优势」+「需确认问题」
+- ❌ 禁止所有人使用相同的沟通方向
 
 ---
 
-## 🛡️ 安全规则
+## 🛡️ 安全与风控
 
 ### 推荐牛人下载
 
-- ✅ **真实浏览器 TLS 指纹**：通过 patchright 在 Edge 内 fetch，服务器无法区分真人
-- ✅ 滚动延迟 3-6 秒随机（模拟真人浏览）
-- ✅ 简历获取 5-15 秒随机（模拟真人阅读）
-- ✅ 建议工作时间运行（9:00-18:00）
-- ✅ 单次建议不超过 50 人，超过则分批次
+| 做法 | 说明 |
+|:----:|------|
+| ✅ 真实浏览器 TLS 指纹 | 通过 patchright 在 Edge 内 fetch，服务器无法区分真人 |
+| ✅ 滚动延迟 3-6 秒随机 | 模拟真人浏览 |
+| ✅ 简历获取 5-15 秒随机 | 模拟真人阅读 |
+| ✅ 建议工作时间运行 | 9:00-18:00 |
+| ✅ 单次建议不超过 50 人 | 超过则分批次 |
 
 ### 通用规则
 
@@ -235,75 +242,85 @@ EOF
 
 ---
 
-##  项目结构
+## 📂 项目结构
 
 ```
 boss-hr-agent-toolkit/
-├── README.md                        # 本文件
-├── FILE_MANAGEMENT.md               # 文件管理规范
+├── README.md                          # 本文件
+├── FILE_MANAGEMENT.md                 # 文件管理规范
 ├── .gitignore
 │
-├── boss-agent-cli/                  # 📖 CLI 命令参考
-│   ── SKILL.md
+├── boss-hr-auto/                      # 🚪 全流程编排（唯一入口）
+│   └── SKILL.md
 │
-├── boss-job-detail/                 # Step 1：JD 提取
+├── boss-agent-cli/                    # 📖 CLI 命令参考
+│   ├── SKILL.md
+│   └── scripts/
+│       ├── boss_login_guard.py        # 登录守护
+│       └── patch_stoken.py            # stoken 补丁
+│
+├── boss-job-detail/                   # Step 1：JD 提取
 │   ├── SKILL.md
 │   └── scripts/boss_jd.py
 │
-├── boss-resume-downloader/          # Step 2A：沟通列表简历下载
+├── boss-resume-downloader/            # Step 2A：沟通列表简历下载
 │   ├── SKILL.md
 │   ├── scripts/sync_boss_resumes.py
 │   └── references/
 │
-├── boss-recommend-downloader/       # Step 2B：推荐牛人简历下载
+├── boss-recommend-downloader/         # Step 2B：推荐牛人简历下载
 │   ├── SKILL.md
-│   ├── README.md
 │   └── scripts/
-│       ├── recommend_list.py         # 获取候选人列表
-│       ├── recommend_download.py     # 批量获取简历（patchright + fetch 方案）
-│       └── run_all.py               # 一键运行（list + download）
+│       ├── recommend_list.py          # 获取候选人列表
+│       ├── recommend_download.py      # 批量获取简历（patchright + fetch）
+│       └── run_all.py                 # 一键运行（list + download）
 │
-── boss-hr-auto/                    # 🚪 全流程编排（唯一入口）
-│   └── SKILL.md
+├── resume-screener/                   # Step 3：评分系统
+│   ├── SKILL.md
+│   ├── references/
+│   └── scripts/
+│       ├── score_resumes.py           # 加权评分 + 分档校准
+│       └── school_tier.py             # 学历分档表
 │
-├── resume-screener/                 # Step 3：评分系统
-│   └── SKILL.md
+├── html-report/                       # Step 4：报告生成
+│   ├── SKILL.md
+│   ├── scripts/generate_html_report.py
+│   └── templates/report.html
 │
-── html-report/                     # Step 4：报告生成
-│   └── SKILL.md
+├── shared/                            # 共享工具
+│   ├── output_manager.py              # 统一文件路径管理
+│   ├── fix_encoding.py                # 编码修复
+│   └── human_interaction.py           # 人工交互兜底
 │
-└── shared/                          # 共享工具（新增）
-    └── output_manager.py            # 统一文件路径管理
+└── tests/                             # 单元测试
+    ├── conftest.py
+    ├── test_school_tier.py
+    └── test_score_resumes.py
 ```
 
 ---
 
-## 📂 输出文件
+## 📤 输出文件
 
 所有输出自动保存到：
 
 ```
 ~/Desktop/boss-hr-output/
 └── <岗位名>/
-    ├── <岗位名>_简历筛选报告.html   # 最终 HTML 报告
-    └── process/                     # 过程文件（留痕查阅）
-        ├── job_detail.json             # JD 数据
-        ├── batch_N_ids.json            # 第 N 批候选人 ID
-        ├── batch_N_resumes.json        # 第 N 批简历
-        ├── test_resumes.json           # 累计所有简历
-        ├── recommend_geek_ids.json     # 累计所有候选人 ID
-        ├── screening_results.json      # 评分结果
-        └── batch_state.json            # 分批进度
+    ├── <岗位名>_统一方案.html          # 最终 HTML 报告
+    └── process/                       # 过程文件（留痕查阅）
+        ├── job_detail.json            # JD 数据
+        ├── recommend_geek_ids.json    # 累计候选人 ID
+        ├── test_resumes.json          # 累计所有简历
+        └── screening_results.json     # 评分结果
 ```
 
-**重要规则：**
-- 禁止在桌面散落文件
-- HTML 报告放岗位文件夹根目录
-- 中间数据放 `process/` 子文件夹
-- 临时 Python 脚本任务结束后删除
-- 复用 skill 内已有的 Python 脚本，禁止重复造轮子
-
-详见 [FILE_MANAGEMENT.md](FILE_MANAGEMENT.md)。
+> [!TIP]
+> - 禁止在桌面散落文件；HTML 报告放岗位文件夹根目录，中间数据放 `process/`
+> - 临时 Python 脚本任务结束后删除
+> - 复用 skill 内已有的 Python 脚本，禁止重复造轮子
+>
+> 详见 [FILE_MANAGEMENT.md](FILE_MANAGEMENT.md)。
 
 ---
 
@@ -327,4 +344,4 @@ boss-hr-agent-toolkit/
 
 ## 📄 License
 
-MIT
+[MIT](https://opensource.org/licenses/MIT)
