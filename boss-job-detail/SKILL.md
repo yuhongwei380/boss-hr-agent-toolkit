@@ -18,7 +18,7 @@ description: |
 ## 用法
 
 ```bash
-python scripts/boss_jd.py <查询条件>
+python scripts/boss_jd.py <查询条件> [--job-name <name>]
 ```
 
 查询条件支持三种：
@@ -26,13 +26,17 @@ python scripts/boss_jd.py <查询条件>
 - `数字 jobId` — `524499312`
 - `岗位名称` — `管培生`（精确匹配优先，否则模糊匹配）
 
+`--job-name` 可选：自定义工作区目录名。**不传时**自动用 BOSS 返回的 `jobName` 清洗为合法目录名（`/ \ : * ? " < > | 空格` → `-`）。
+
 ## 工作流程
 
 1. 通过 boss CLI 获取岗位列表，匹配查询条件
 2. 用 patchright 连接 CDP 浏览器
 3. 导航到岗位编辑页（`/web/chat/job/edit?encryptId=...`）
 4. 等待 iframe 加载完成后提取表单内容
-5. 输出到 `WorkBuddy/boss-resumes/jd/<encryptJobId>.json`
+5. 输出到 `~/Desktop/boss-hr-output/<job_name>/process/job_detail.json`
+
+> **工作区约定**：所有数据统一存放在 `~/Desktop/boss-hr-output/<job_name>/` 下，由 `shared/output_manager.JobOutputManager` 管理（`boss-recommend-downloader` / `resume-screener` / `html-report` 共用同一规范）。
 
 ## 输出格式
 

@@ -1,15 +1,26 @@
 """Get BOSS job detail (JD) via CDP browser.
 
-Usage: python boss_jd.py <encryptJobId|jobId|职位名>
+Usage: 
+  python boss_jd.py <encryptJobId|jobId|职位名> [--job-name <name>]
+
+Output: <job-name>/process/job_detail.json
 """
-import json, sys, subprocess, time, os
+import json, sys, subprocess, time, os, re, argparse
 from pathlib import Path
 from patchright.sync_api import sync_playwright
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
+import fix_encoding  # noqa: E402  # 强制 Windows UTF-8 stdout
+from output_manager import JobOutputManager
+
 CDP_URL = "http://localhost:9222"
-OUT_DIR = Path.home() / "WorkBuddy" / "boss-resumes" / "jd"
 
 _BOSS_ENV = {**os.environ, "PYTHONHOME": "", "PYTHONIOENCODING": "utf-8"}
+
+
+def _safe_name(name: str) -> str:
+    """清洗岗位名为合法目录名"""
+    return re.sub(r'[\\/:*?"<>|\s]+', '-', name).strip('-') or 'job'
 
 
 def resolve_encrypt_id(query):
@@ -82,27 +93,30 @@ def fetch_jd(encrypt_job_id):
 
 
 if __name__ == "__main__":
-    query = sys.argv[1] if len(sys.argv) > 1 else None
-    if not query:
-        print("Usage: python boss_jd.py <encryptJobId|jobId|职位名>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description='Get BOSS job detail (JD) via CDP')
+    parser.add_argument('query', help='encryptJobId | jobId | 职位名')
+    parser.add_argument('--job-name', default=None,
+                        help='工作区目录名（默认自动用 jobName 清洗为合法目录名）')
+    args = parser.parse_args()
 
-    eid, name = resolve_encrypt_id(query)
+    eid, name = resolve_encrypt_id(args.query)
     if not eid:
-        print(f"Job not found: {query}")
+        print(f"Job not found: {args.query}")
         sys.exit(1)
 
     print(f"Found: {name} ({eid})")
     raw = fetch_jd(eid)
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    job_name = args.job_name or _safe_name(name)
+    output = JobOutputManager(job_name)
+
     save_data = {
         "jobName": name,
         "encryptJobId": eid,
         "bodyText": raw.get("bodyText", ""),
         "formValues": raw.get("formValues", []),
     }
-    out_path = OUT_DIR / f"{eid}.json"
+    out_path = Path(output.jd_path)
     out_path.write_text(json.dumps(save_data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Saved to {out_path}")
     print("OK")

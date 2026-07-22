@@ -1,114 +1,232 @@
 ---
 name: html-report
 description: |
-  生成美观、可读性强的 HTML 可视化报告。包含渐变色头部、卡片式布局、排名表格、5 维度进度条、评分依据列表、个性化行动建议（含沟通策略）等排版元素。
+  生成美观的简历筛选 HTML 报告。接受 resume-screener 输出的 screening_results.json，渲染候选人排名、5 维度评分进度条、评分依据、行动建议。
 
   **本 Skill 是 boss-hr-auto 编排流程的子步骤（Step 4），由 boss-hr-auto 在评分完成后调用，不应作为入口 Skill 直接加载。**
 
-  **重要更新**：
-  - 行动建议必须根据候选人具体经历个性化，禁止模板化
-  - 每个人的沟通方向和需确认问题必须不同
-type: template
+  **唯一方案**：通用 schema 渲染 + LLM 自由填写的 highlights/concerns/advice 直接展示。任意岗位通用。
 ---
-# HTML 报告生成模板
 
-## 适用场景
+# HTML 报告生成（统一方案）
 
-简历筛选报告（含候选人排名、5 维度评分、评分依据、个性化行动建议 + 沟通策略）
+## 设计核心
 
-## 设计规范
+- **通用 schema**：接受 `resume-screener/scripts/score_resumes.py` 输出的 `screening_results.json`，**任意岗位都能用**
+- **LLM 自由填写**：candidates[].highlights / concerns / actions[].{background, action, strengths} 由 LLM 决定内容，脚本只负责渲染
+- **字段鲁棒**：所有字段 `.get()` 处理，缺失自动跳过
+- **视觉风格**：黑蓝渐变 header + 玻璃质感 meta-item + 三色 stat-card 配色
 
-背景色 `#f5f7fa`，头部 `linear-gradient(135deg, #1a1a2e, #16213e, #0f3460)`，卡片白圆角 `border-radius: 12px`，字体 `Inter, PingFang SC, Microsoft YaHei`，标签绿 `#059669`/黄 `#d97706`/红 `#dc2626`，进度条细圆角 `height: 4px`。进度条颜色：≥70% 绿 / 50-69% 黄 / <50% 红。
+---
 
-## 排版结构
-1. 渐变色头部 — 标题 + 元信息网格（岗位名称、薪资、地点、候选人总数）
-2. 筛选总览 — 三色汇总卡片（推荐/待定/不推荐）
-3. 排名表格 — 完整 5 维度列（学历 25%、经验 30%、技能 25%、项目 15%、专业 5%）
-4. 候选人详情 — 每候选人一张卡片：5 维度进度条 + 评分依据列表
-5. 行动建议 — 必须个性化，按下方格式
+## 核心不变量（不要修改）
 
-## 行动建议格式（必须严格遵循，必须个性化）
+| 项 | 值 |
+|----|----|
+| 输入文件 | `screening_results.json`（由 score_resumes.py 产出） |
+| 输出文件 | `*.html`（自包含单文件，无外部依赖） |
+| 字体栈 | Inter, "PingFang SC", "Microsoft YaHei" |
+| 主色（header） | `linear-gradient(135deg, #1a1a2e, #16213e, #0f3460)` |
+| 背景色 | `#f5f7fa` |
+| 卡片圆角 | `border-radius: 12px` |
+| Tier 颜色 | 推荐 #059669（绿）/ 待定 #d97706（黄）/ 不推荐 #dc2626（红） |
+| 进度条颜色 | ≥70% 绿 / 50-69% 黄 / <50% 红 |
 
-### ✅ 推荐面试（≥70 分）
-每人必须写两个部分：
-1. **候选人背景**：基于实际学校、专业、工作经历、项目经历、技能标签总结（禁止泛泛而谈）
-2. ** 沟通方向**：针对该候选人的具体情况给出面试重点（禁止所有人一样的沟通方向）
+---
 
-**正确示例：**
-```
-赵一坤 - 77.75 分
-候选人背景：车辆工程专业 + 3 年动力域/底盘域测试（ABS/EPB/ESC）+ CANOE/TSMaster/UDS 技能
-沟通方向：重点确认是否有车架结构设计经验（非测试），询问 CATIA/SolidWorks 三维设计能力，了解车架强度仿真和焊接工艺熟悉程度
-```
+## 工具脚本
 
-**错误示例（模板化 - 禁止）：**
-```
-赵一坤 - 77.75 分
-沟通方向：重点了解车架结构设计经验，确认是否熟练使用 CATIA/SolidWorks 等三维设计软件，询问焊接工艺和钣金工艺熟悉程度。
-（所有人都一样的沟通方向）
-```
+### `scripts/generate_html_report.py`（**唯一**渲染脚本）
 
-###  待沟通确认（60-69 分）
-每人必须写两个部分：
-- **✅ 优势**：为什么值得联系（基于该候选人的具体亮点）
-- **❓ 需确认问题**：具体的、针对该候选人的问题（禁止所有人一样的三个问题）
+**工具函数**（agent 可直接 import）：
 
-**正确示例：**
-```
-陈兴明 - 66.5 分
-优势：3 年车架相关经验，有实际项目
-需确认问题：风险：软件工程专业不相关，技能标签中无设计软件。关键问题：专业不相关但有经验，是自学还是转岗？设计能力如何？
+| 函数 | 作用 |
+|------|------|
+| `render(data: dict) → str` | 输入 screening_results.json 数据，输出 HTML 字符串 |
+| `bar_color(pct) → str` | 根据百分比返回进度条颜色（绿/黄/红） |
+| `tier_badge(tier) → str` | 根据 tier 返回徽章 HTML |
+| `render_candidate(c, labels, rank) → str` | 渲染单个候选人卡片 |
+| `render_action(name, score, body) → str` | 渲染单个行动建议行 |
+
+**CLI**：
+
+```bash
+python generate_html_report.py --input <screening_results.json> --output <report.html>
 ```
 
-**错误示例（模板化 - 禁止）：**
+### `templates/report.html`（HTML 模板）
+
+Jinja2 风格模板占位符。**当前未使用**（脚本直接生成自包含 HTML），保留作为参考。
+
+---
+
+## 完整工作流
+
 ```
-陈兴明 - 66.5 分
-优势：3 年车架相关经验
-需确认问题：
-  - 是否具备车架/底盘结构设计经验？
-  - 是否熟练使用 CATIA/SolidWorks 等三维设计软件？
-  - 是否熟悉型材、钣金焊接工艺？
-（所有人都一样的三个问题）
+boss-recommend-downloader 下载简历（输出到 ~/Desktop/boss-hr-output/<job_name>/process/）
+    ↓
+resume-screener/scripts/score_resumes.py
+    LLM 评 4 维度（exp/skill/proj/major）
+    + school_tier 强制覆盖 edu
+    + 公式重算 total
+    + 判定 tier
+    → 输出 ~/Desktop/boss-hr-output/<job_name>/process/screening_results.json
+    ↓
+html-report/scripts/generate_html_report.py
+    读取 screening_results.json
+    → 输出 ~/Desktop/boss-hr-output/<job_name>/<job_name>_统一方案.html（自包含）
+    ↓
+preview_url 在 IDE 内置浏览器打开
 ```
 
-### ❌ 不推荐（<60 分）
-一句话列出所有不推荐候选人及具体原因。
+## 工作区路径约定
 
-## 关键实现
-- 加权分 = pct × weight / 100
-- 百分比提取用 `re.match(r'(\D+?)(\d+)%', ...)`
-- 按总分从大到小排序
-- 所有候选人必须有评分依据列表
-- **行动建议必须个性化**：根据候选人具体经历生成，禁止模板化
+**所有数据统一存放在 `~/Desktop/boss-hr-output/<job_name>/` 下**，由 `shared/output_manager.JobOutputManager` 管理。
 
-## 常见陷阱
-- 字符串分割提取百分比 → dict key 错误全显示 0
-- 只给高分写评分依据
-- **行动建议模板化**：所有人的沟通方向和需确认问题都一样（严重错误）
-- 学历评分给所有人相同分数（严重错误）
+| Step | Skill | 脚本 | 输出文件 |
+|:----:|-------|------|----------|
+| 1 | `boss-job-detail` | `boss_jd.py` | `process/job_detail.json` |
+| 2a | `boss-recommend-downloader` | `recommend_list.py` | `process/recommend_geek_ids.json` |
+| 2b | `boss-recommend-downloader` | `recommend_download_v2.py` | `process/test_resumes.json` |
+| 3a | `resume-screener` | LLM agent | `process/_llm_scores.json` |
+| 3b | `resume-screener` | `score_resumes.py` | `process/screening_results.json` |
+| 4 | `html-report` | `generate_html_report.py` | `<job_name>_统一方案.html` |
 
-## 个性化建议生成规则
+> 上游脚本（Step 1 / 2）已自动写入工作区，下游脚本（Step 3 / 4）通过 `--input/--output` 读取工作区。
+>
+> `JobOutputManager` 提供的标准路径属性：`jd_path` / `recommend_geek_ids_path` / `resumes_path` / `screening_results_path` / `report_path`。
 
-### 推荐面试候选人
-根据以下维度生成个性化背景和建议：
-1. **学校 + 专业**：是否对口，学校档次
-2. **工作经历**：几家公司，什么类型公司，什么岗位
-3. **项目经历**：项目名称，角色，与目标岗位的相关性
-4. **技能标签**：匹配了哪些目标技能，缺失哪些关键技能
-5. **经验年限**：是否满足要求，是否有相关经验
+---
 
-**沟通方向必须针对该候选人的弱点或疑问点：**
-- 技能匹配度好 → 深入问项目复杂度
-- 技能匹配度差 → 确认是否会关键软件
-- 专业不相关但有经验 → 问是自学还是转岗
-- 经验丰富但未见目标项目 → 确认是否有相关经验
-- 有大厂经历 → 深入了解项目职责
+## 输入 schema（screening_results.json）
 
-### 待沟通确认候选人
-**优势**：提取该候选人最大的亮点（经验最长/专业对口/有大厂经历/有相关项目等）
+**必填字段**（缺失会报错）：
 
-**需确认问题**：针对该候选人的最大风险点提问：
-- 专业不相关 → 问专业背景与岗位的关联
-- 技能缺失 → 问是否会关键工具
-- 经验方向不符 → 问是否有目标方向经验
-- 项目经历弱 → 问项目复杂度和个人职责
+```json
+{
+  "job_name": "车架工程师",
+  "summary": {"total": 32, "recommend": 0, "pending": 2, "reject": 30},
+  "candidates": [
+    {
+      "rank": 1,
+      "name": "陈瀚",
+      "tier": "待定",
+      "total": 69.8,
+      "dimensions": [
+        {"pct": 62, "weighted": 15.5, "weight": 25, "reason": "二本公办（school_tier 查询：辽宁工业大学）"},
+        {"pct": 80, "weighted": 24.0, "weight": 30, "reason": "..."}
+      ]
+    }
+  ]
+}
+```
+
+**可选字段**（缺失自动跳过对应渲染块）：
+
+| 字段 | 渲染位置 |
+|------|----------|
+| `meta.title` / `meta.subtitle` | header 标题/副标题 |
+| `meta.job.{company,location,salary,experience_required,degree_required}` | meta-grid 卡片 |
+| `meta.type_judgment.{type,reason}` | 元信息栏（岗位类型） |
+| `meta.core_requirements` | 核心要求列表 |
+| `dimension_labels` | 进度条维度名（默认 ["学历","工作经验","专业技能","项目经历","专业匹配"]） |
+| `candidates[].school` | 候选人卡片学校 |
+| `candidates[].work_years` | 候选人卡片工作年限 |
+| `candidates[].current_role` | 候选人卡片当前岗位 |
+| `candidates[].hard_pass` / `hard_reason` | 硬门槛标签（一般不出现） |
+| `candidates[].dimensions[].reason` | 评分依据列表 |
+| `candidates[].highlights` | 候选人亮点列表 |
+| `candidates[].concerns` | 候选人顾虑列表 |
+| `actions.recommend[]` | 推荐面试清单 |
+| `actions.pending[]` | 待沟通确认清单 |
+| `actions.reject[]` | 不推荐清单 |
+
+---
+
+## 视觉规范
+
+### 排版结构（5 段式）
+
+1. **Header** — 渐变色（`#1a1a2e → #16213e → #0f3460`），标题 + subtitle + meta-grid（岗位名称/薪资/地点/候选人总数）
+2. **筛选总览** — 4 张 stat-card（蓝/绿/黄/红），分别显示总数/推荐/待定/不推荐
+3. **排名表格** — 5 维度列（学历 25% / 经验 30% / 技能 25% / 项目 15% / 专业 5%）
+4. **候选人详情** — 每候选人一张卡片：基础信息 + 5 维度进度条 + 评分依据列表 + 亮点/顾虑
+5. **行动建议** — 三段式（✅ 推荐 / 📌 待沟通 / ❌ 不推荐），每段按 actions 字段渲染
+
+### 配色规则
+
+| 元素 | 颜色 | 触发条件 |
+|------|------|----------|
+| Tier 徽章 - 推荐 | `#059669` 绿底 | total ≥ 70 |
+| Tier 徽章 - 待定 | `#d97706` 黄底 | 60 ≤ total < 70 |
+| Tier 徽章 - 不推荐 | `#dc2626` 红底 | total < 60 |
+| 进度条 - 高 | `#059669` 绿 | pct ≥ 70 |
+| 进度条 - 中 | `#d97706` 黄 | 50 ≤ pct < 70 |
+| 进度条 - 低 | `#dc2626` 红 | pct < 50 |
+
+### 容器尺寸
+
+- 最大宽度：1200px
+- 卡片 padding：28px
+- meta-item padding：12px 16px
+- 进度条高度：4px（细圆角）
+- 字体标题：28px / 副标题 14px / 标签 11px（大写）/ 数值 16px
+
+---
+
+## 关键设计决策
+
+### 为什么用通用 schema（不用字段硬编码）
+
+- 旧 `generate_report.py` 字段名写死（edu_pct / exp_pct / skill_pct / ...）
+- 任何字段增减都要改 HTML 模板，改一处坏一片
+- 新通用模板只读 `dimensions[]` 数组，**任意数量、任意顺序的维度都能渲染**
+- 加新维度（如"语言能力"）只需在 `WEIGHTS` 加一行 + LLM 评分，HTML 不用动
+
+### 为什么 LLM 自由填写 highlights/concerns/advice（不用 if/else 模板）
+
+- 旧 `generate_report.py` 行动建议用 if/else 模板拼接
+- 所有"待定"候选人的建议长得几乎一样（"3 年经验 + 软件能力 + 需确认设计能力"）
+- 旧 v1.0 SKILL.md 要求"必须包含背景+沟通方向"，但脚本实现是 if/else 模板生成 → **规范与实现矛盾**
+- 新方案让 LLM 在评 4 维度时**一起写好** highlights / concerns / advice
+- 脚本只负责渲染，不强制格式
+
+### 为什么字段全部 .get() 处理
+
+- screening_results.json 字段可能缺失（不同 JD / 不同 LLM 输出风格不同）
+- 缺失字段自动跳过对应渲染块，不报错
+- 旧版本字段写死会 KeyError 崩溃
+
+### 为什么 templates/report.html 当前不用
+
+- 旧模板用 Jinja2 占位符，**需要额外的模板引擎依赖**
+- 新方案直接 Python f-string 拼字符串，**零依赖**
+- templates/ 目录保留作为参考，不删除
+
+---
+
+## CLI 调用示例
+
+```bash
+python generate_html_report.py \
+    --input "C:\Users\yuyu\Desktop\boss-hr-output\车架工程师\process\screening_results.json" \
+    --output "C:\Users\yuyu\Desktop\boss-hr-output\车架工程师\车架工程师_统一方案.html"
+```
+
+输出：
+
+```
+HTML 报告已生成: C:\Users\yuyu\Desktop\boss-hr-output\车架工程师\车架工程师_统一方案.html
+文件大小: 121877 字节
+候选人: 32 人
+```
+
+---
+
+## 注意事项
+
+- 输入文件必须是 `resume-screener` 产出的 `screening_results.json`，不要手工构造
+- tier 字段值必须是 `推荐` / `待定` / `不推荐` 之一（脚本硬编码匹配）
+- dimensions 数组按 `score_resumes.py` 的固定顺序输出：edu / exp / skill / proj / major
+- 候选人按 rank 升序展示（rank=1 在最前）
+- HTML 是自包含单文件，所有 CSS 内联，无外部依赖，可直接邮件发送或打印

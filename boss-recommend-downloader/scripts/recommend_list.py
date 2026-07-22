@@ -17,9 +17,11 @@ import os
 
 # 添加 shared 目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
+import fix_encoding  # noqa: E402  # 强制 Windows UTF-8 stdout
 from output_manager import JobOutputManager
 
 from patchright.sync_api import sync_playwright
+from human_interaction import human_scroll
 import time
 import json
 import random
@@ -106,6 +108,7 @@ def get_recommend_candidates(job_name='车架工程师', max_candidates=None,
             return
 
         frame = iframe.content_frame()
+        iframe_box = iframe.bounding_box()
 
         # 确定本批目标数量
         if batch_size and batch_number:
@@ -124,7 +127,8 @@ def get_recommend_candidates(job_name='车架工程师', max_candidates=None,
 
             prev = len(batch_geeks)
 
-            frame.evaluate('window.scrollBy(0, 1500)')
+            # 改法1:用真实滚轮替代 evaluate(scrollBy),制造真实输入事件(拟人)
+            human_scroll(pg, iframe_box, min_delta=1200, max_delta=1800)
             delay = random.uniform(3, 6)
             time.sleep(delay)
 

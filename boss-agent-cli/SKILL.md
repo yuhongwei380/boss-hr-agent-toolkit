@@ -17,59 +17,50 @@ uv tool install boss-agent-cli
 # 或 pipx install boss-agent-cli
 ```
 
-## 登录流程（双阶段策略）
+## 登录流程（守卫脚本状态机）
 
-**原则：** 有 Cookie 直接注入，无 Cookie 提示用户扫码。
+**唯一入口：`scripts/boss_login_guard.py`（位于本 SKILL.md 同级 scripts/ 目录）。**
 
-### 第1步：检查 CLI 登录态
+> ⚠️ 禁止凭单一弱信号宣布登录成功。`boss status` 返回 `logged_in: true` 只代表本地有凭证文件，**不代表凭证完整或可用**（可能假阳性，也可能缺 `__zp_stoken__` 的半登录）。
 
-```bash
-boss status                    # 检查 CLI 登录态
-boss --role recruiter status   # 招聘者模式
-```
+### 登录验收标准（三条强信号，全部满足才算 ready）
 
-如果返回 `logged_in: true`，说明 CLI 已有登录凭证 **→ 尝试提取 Cookie 注入到 CDP 浏览器**。
+| # | 验收项 | 判定 |
+|:-:|:------|:-----|
+| 1 | 登录态存活 | `boss status --live` → `logged_in: true` 且 `live: true` |
+| 2 | 凭证完整 | `auth_state == "full"`（`wt2` 与 `__zp_stoken__` 均存在） |
+| 3 | 凭证可用 | `hr jobs list` 返回 `ok: true`（真实数据探针） |
 
-### 第2步（优先）：Cookie 注入（CLI 已登录时）
+**`auth_state == "partial"`（缺 `__zp_stoken__`）一律视为未完整登录**，不得带病继续后续步骤。
 
-```bash
-# 第一步：用 IDA 获取 Cookie
-# 第二步：将 Cookie 通过 CDP add_cookies 注入浏览器
-# 第三步：刷新 BOSS 页面验证是否自动登录
-```
-
-关键 Cookie 字段：`zp_at`（认证令牌）、`wt2`（登录态）、`__zp_seo_uuid__`、`bst`
-
-注入后导航到目标页面即可，无需用户扫码。
-
-### 第3步（兜底）：提示用户扫码（CLI 未登录 / Cookie 注入失败时）
-
-1. **启动 CDP 浏览器：**
-   ```bash
-   # Windows Edge（推荐）
-   "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" \
-     --remote-debugging-port=9222 \
-     --user-data-dir="%USERPROFILE%\.workbuddy\chrome-profiles\boss-cdp" \
-     --remote-allow-origins=*
-   ```
-
-2. **打开 BOSS 登录页：**
-   - 导航到 `https://www.zhipin.com/web/user/?ka=header-login`
-   - **→ 明确告知用户「登录页面已打开，请扫码登录」**
-
-3. **等待用户确认登录成功后**，再进行后续操作（JD 提取 / 简历下载等）
-
-### 登录后验证
+### 状态机（check → open-login / extract）
 
 ```bash
-boss --role recruiter me                   # 验证招聘者信息
-boss --role recruiter hr jobs list         # 验证可看到在线职位
+GUARD="<本skill目录>/scripts/boss_login_guard.py"
+
+# 第1步：检查（exit: 0=ready / 2=degraded / 3=not_logged_in / 4=cdp_unreachable）
+python "$GUARD" check
+
+# ready → 继续后续任务
+# degraded（浏览器在线但缺 stoken）→ 重提取，无需用户操作：
+python "$GUARD" extract
+
+# not_logged_in / cdp_unreachable / extract 后仍 degraded：
+python "$GUARD" open-login      # 自动拉起 CDP 浏览器并打开登录页
+# → 明确告知用户「登录页面已打开，请扫码登录」
+# → 用户确认已扫码后：
+python "$GUARD" extract          # 提取凭证并复检
 ```
 
-### 常见问题
+### 硬性规则
 
-- `boss status` 可能假阳性（返回登录但实际 token 已过期），用 `boss me` 或 `boss hr jobs list` 验证更可靠
-- Windows 上 PYTHONHOME 环境变量可能冲突，运行命令前加 `PYTHONHOME=""`
+1. `extract` 返回非 ready → **停止流程**，向用户报告缺失项（如 `__zp_stoken__`），禁止"先跑跑看"
+2. `boss login --cdp` 返回成功 ≠ 凭证完整（stoken 可能不在浏览器 cookie 中），必须以 `extract` 的复检 verdict 为准
+3. 守卫脚本已处理：`PYTHONHOME` 冲突清理、GBK 编码、`boss` 不在 PATH 时回退 `%USERPROFILE%\bin\boss.cmd`、CDP 未启动时自动拉起 Edge/Chrome
+
+### 参考：Cookie 字段（仅背景知识，验收以上述三条为准）
+
+关键 Cookie：`zp_at`（认证令牌）、`wt2`（一级登录态）、`__zp_stoken__`（二级令牌，候选人搜索/详情等只读流必需）、`__zp_seo_uuid__`、`bst`。
 
 ## Recruiter Workflow
 

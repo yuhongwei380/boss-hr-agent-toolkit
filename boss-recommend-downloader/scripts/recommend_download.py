@@ -1,57 +1,100 @@
 #!/usr/bin/env python3
 """
-推荐牛人简历批量下载脚本（支持分批）
-Step 2: 使用 CLI 批量获取完整简历
+推荐牛人简历下载脚本（patchright + fetch 版本）
+通过浏览器 fetch 调 BOSS API，使用真实 Edge TLS 指纹，不依赖 CLI。
 
-分批模式：
-  --batch 1  下载 batch_1_ids.json 中的候选人，保存到 batch_1_resumes.json
-  --batch 2  下载 batch_2_ids.json 中的候选人，保存到 batch_2_resumes.json
-  每批结果同时追加到 test_resumes.json（累计所有已下载简历）
-
-使用统一输出路径：~/Desktop/boss-hr-output/<岗位名>/process/
+用法:
+  python recommend_download.py --job-name 车架工程师 --batch 1
+  python recommend_download.py --job-name 车架工程师  # 下载全部
 """
 
 import sys
 import os
-
-# 添加 shared 目录到路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
-from output_manager import JobOutputManager
-
 import json
-import subprocess
 import time
 import random
 import argparse
 from datetime import datetime
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
+import fix_encoding  # noqa: E402  # 强制 Windows UTF-8 stdout
+from output_manager import JobOutputManager
 
-def download_resumes(job_name='车架工程师',
-                     input_geek_ids=None,
-                     max_count=None,
-                     batch_number=None):
-    """
-    批量获取完整简历
+from patchright.sync_api import sync_playwright
+from human_interaction import human_browse_context
 
-    Args:
-        job_name:      岗位名称
-        input_geek_ids: 候选人列表文件路径（为 None 时使用默认路径或分批文件）
-        max_count:     最大获取数量
-        batch_number:  分批模式，第几批（从 1 开始）
-    """
+FETCH_JS = """async (params) => {
+    try {
+        const url = '/wapi/zpjob/view/geek/info?encryptGeekId=' + params.geek_id
+            + '&encryptJobId=' + params.job_id
+            + '&securityId=' + encodeURIComponent(params.sec_id);
+        const resp = await fetch(url, {credentials: 'include'});
+        const data = await resp.json();
+        if (data.code !== 0 || !data.zpData) {
+            return {ok: false, error: data.message || 'unknown'};
+        }
+        const zp = data.zpData;
+        if (zp.blockDialog && zp.blockDialog.title) {
+            return {ok: false, error: zp.blockDialog.title};
+        }
+        const d = zp.geekDetailInfo || {};
+        const b = d.geekBaseInfo || {};
+        return {
+            ok: true,
+            name: b.name || '',
+            age: b.ageDesc || '',
+            degree: b.degreeCategory || '',
+            work_years: b.workYearDesc || '',
+            expectation: d.anonymousGeekExpect || d.geekExpect || null,
+            work_experience: (d.geekWorkExpList || []).map(w => ({
+                company: w.company || '',
+                position: w.positionName || '',
+                department: w.department || '',
+                start: w.startDate || '',
+                end: w.endDate || '',
+                duration: w.workYearDesc || '',
+                responsibility: w.responsibility || '',
+                performance: w.performance || '',
+                keywords: w.tagList || w.keywords || []
+            })),
+            project_experience: (d.geekProjExpList || []).map(p => ({
+                name: p.projName || p.name || '',
+                role: p.projRole || p.role || '',
+                start: p.startDate || '',
+                end: p.endDate || '',
+                duration: p.projYearDesc || '',
+                description: p.projDesc || p.description || '',
+                achievement: p.projAchieve || p.achievement || ''
+            })),
+            education: (d.geekEduExpList || []).map(e => ({
+                school: e.school || '',
+                major: e.major || '',
+                degree: e.degreeName || '',
+                start: e.startDate || '',
+                end: e.endDate || ''
+            })),
+            certifications: (d.geekCertificationList || []).map(c => c.certName || c.name || ''),
+            skills: d.professionalSkill || '',
+            active_status: b.activeTimeDesc || ''
+        };
+    } catch(e) {
+        return {ok: false, error: e.message};
+    }
+}"""
+
+
+def download_resumes(job_name, batch_number=None, max_count=None):
     output = JobOutputManager(job_name)
 
-    # 确定输入文件
+    # 读取候选人列表
     if batch_number:
         input_path = output.get_process_path(f'batch_{batch_number}_ids.json')
-        if not os.path.exists(input_path):
-            print(f'错误：批次文件不存在：{input_path}')
-            print(f'请先运行 recommend_list.py --batch {batch_number} 获取候选人列表')
-            return [], []
-    elif input_geek_ids:
-        input_path = input_geek_ids
     else:
         input_path = output.recommend_geek_ids_path
+
+    if not os.path.exists(input_path):
+        print(f'错误：文件不存在：{input_path}')
+        return [], []
 
     with open(input_path, 'r', encoding='utf-8') as f:
         geek_list = json.load(f)
@@ -60,93 +103,91 @@ def download_resumes(job_name='车架工程师',
         print('候选人列表为空')
         return [], []
 
-    # 从第一个候选人获取 jobId（优先 encryptJobId，兜底 jobId）
-    gc = geek_list[0].get('geekCard', {}) if geek_list else {}
-    job_id = gc.get('encryptJobId', '') or str(gc.get('jobId', ''))
-    if not job_id:
-        print('错误：无法从数据中获取 job_id')
-        return [], []
+    gc0 = geek_list[0].get('geekCard', {})
+    job_id = gc0.get('encryptJobId', '') or str(gc0.get('jobId', ''))
 
     if batch_number:
         print(f'[分批模式] 第 {batch_number} 批')
     print(f'岗位：{job_name}')
-    print(f'岗位 ID: {job_id}')
-    print(f'本批候选人：{len(geek_list)} 人')
+    print(f'岗位 ID：{job_id}')
+    print(f'候选人：{len(geek_list)} 人')
     if max_count:
-        print(f'最大获取：{max_count}')
+        print(f'最大下载：{max_count}')
 
     resumes = []
     failed = []
-    hit_limit = False
     start_time = datetime.now()
     print(f'\n开始时间：{start_time.strftime("%H:%M:%S")}\n')
 
-    for i, g in enumerate(geek_list):
-        if max_count and len(resumes) + len(failed) >= max_count:
-            break
+    with sync_playwright() as p:
+        browser = p.chromium.connect_over_cdp('http://localhost:9222')
+        ctx = browser.contexts[0]
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
 
-        geek_id = g.get('encryptGeekId', '')
-        geek_card = g.get('geekCard', {})
-        security_id = geek_card.get('securityId', '') if isinstance(geek_card, dict) else ''
-        name = geek_card.get('geekName', '') if isinstance(geek_card, dict) else ''
+        # 确保在 BOSS 域名下（有 cookie）
+        if 'zhipin.com' not in page.url:
+            print('导航到 BOSS 直聘...')
+            page.goto('https://www.zhipin.com/web/chat/recommend',
+                       wait_until='domcontentloaded', timeout=20000)
+            time.sleep(3)
 
-        if not geek_id or not security_id:
-            failed.append({'index': i + 1, 'name': name or 'Unknown', 'reason': 'no IDs'})
-            continue
-
-        delay = random.uniform(5, 20)
-        elapsed = (datetime.now() - start_time).total_seconds() / 60
-        print(f'[{elapsed:.1f}分钟] #{i + 1}: {name}...', end=' ', flush=True)
-
-        cmd = [
-            'boss.exe', '--role', 'recruiter', '--platform', 'zhipin',
-            '--cdp-url', 'http://localhost:9222',
-            'hr', 'resume', geek_id,
-            '--security-id', security_id,
-            '--job-id', job_id
-        ]
-
-        env = {**os.environ, 'PYTHONHOME': '', 'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1'}
-        result = subprocess.run(cmd, capture_output=True, env=env)
-
+        # 获取推荐列表 iframe(用于方案A:fetch 前制造拟人浏览上下文)
         try:
-            resp = json.loads(result.stdout)
-            if resp.get('ok'):
-                data = resp.get('data', {})
-                zpdata = data.get('zpData', {}) if isinstance(data, dict) else {}
-                block = zpData.get('blockDialog', {}) if isinstance(zpData, dict) else {}
+            iframe = page.query_selector('iframe')
+            iframe_box = iframe.bounding_box() if iframe else None
+        except Exception:
+            iframe_box = None
 
-                if block.get('title') and '上限' in block.get('title', ''):
-                    print(f'已达上限：{block.get("title")}')
-                    hit_limit = True
-                    break
-                elif data.get('basic'):
-                    resumes.append({
-                        'name': data.get('basic', {}).get('name', name),
-                        'age': data.get('basic', {}).get('age'),
-                        'degree': data.get('basic', {}).get('degree'),
-                        'work_years': data.get('basic', {}).get('work_years'),
-                        'expectation': data.get('expectation'),
-                        'work_experience': data.get('work_experience', []),
-                        'project_experience': data.get('project_experience', []),
-                        'education': data.get('education', []),
-                        'certifications': data.get('certifications', [])
-                    })
+        for i, g in enumerate(geek_list):
+            if max_count and len(resumes) + len(failed) >= max_count:
+                break
+
+            geek_id = g.get('encryptGeekId', '')
+            gcard = g.get('geekCard', {})
+            sec_id = gcard.get('securityId', '')
+            name = gcard.get('geekName', '')
+
+            if not geek_id or not sec_id:
+                failed.append({'name': name or 'Unknown', 'reason': '缺少 ID'})
+                continue
+
+            elapsed = (datetime.now() - start_time).total_seconds() / 60
+            print(f'[{elapsed:.1f}分钟] #{i + 1}: {name}...', end=' ', flush=True)
+
+            # 改法2(方案A):fetch 前补拟人浏览上下文(鼠标移动+小幅滚动,不点击、
+            # 不点开简历,因此不会重复消耗"查看简历"配额,也不会因定位不到卡片而失败)
+            try:
+                human_browse_context(page, iframe_box)
+            except Exception as e:
+                print(f'  [上下文] 跳过:{str(e)[:40]}')
+
+            # 用浏览器 fetch 调 API（真实 Edge 指纹）
+            try:
+                result = page.evaluate(FETCH_JS, {
+                    'geek_id': geek_id,
+                    'job_id': job_id,
+                    'sec_id': sec_id
+                })
+
+                if result.get('ok'):
+                    resumes.append(result)
                     print('OK')
                 else:
-                    print('数据为空')
-                    failed.append({'index': i + 1, 'name': name, 'reason': 'empty'})
-            else:
-                err = resp.get('error', {}).get('message', '')
-                print(f'失败：{err[:40]}')
-                failed.append({'index': i + 1, 'name': name, 'reason': err[:50]})
-        except Exception:
-            raw = result.stdout[:100].decode('utf-8', errors='replace') if result.stdout else ''
-            print(f'解析错误 ({raw})')
-            failed.append({'index': i + 1, 'name': name, 'reason': 'parse error'})
+                    err = result.get('error', 'unknown')
+                    print(f'失败：{err[:50]}')
+                    failed.append({'name': name, 'reason': err[:80]})
+                    # 如果触发额度上限，停止
+                    if '上限' in err:
+                        print('已达查看上限，停止下载')
+                        break
+            except Exception as e:
+                print(f'异常：{str(e)[:50]}')
+                failed.append({'name': name, 'reason': str(e)[:80]})
 
-        if not hit_limit and i < len(geek_list) - 1:
-            time.sleep(delay)
+            # 随机延迟 5-15 秒（模拟真人浏览节奏）
+            if i < len(geek_list) - 1:
+                delay = random.uniform(5, 15)
+                time.sleep(delay)
 
     # 统计
     end_time = datetime.now()
@@ -157,56 +198,48 @@ def download_resumes(job_name='车架工程师',
     print(f'总耗时：{duration:.1f} 分钟')
     print(f'成功：{len(resumes)} 份简历')
     print(f'失败：{len(failed)} 份')
-    print(f'触发每日上限：{"是" if hit_limit else "否"}')
 
+    # 保存
     if batch_number:
-        # 分批模式：保存到 batch_N_resumes.json + 追加到 test_resumes.json
-        batch_resumes_path = output.get_process_path(f'batch_{batch_number}_resumes.json')
-        with open(batch_resumes_path, 'w', encoding='utf-8') as f:
+        batch_path = output.get_process_path(f'batch_{batch_number}_resumes.json')
+        with open(batch_path, 'w', encoding='utf-8') as f:
             json.dump(resumes, f, ensure_ascii=False, indent=2)
-        print(f'\n本批简历已保存到：{batch_resumes_path}')
+        print(f'\n本批简历：{batch_path}')
 
         # 追加到累计文件
-        cumulative_path = output.resumes_path
-        existing_resumes = []
-        if os.path.exists(cumulative_path):
-            with open(cumulative_path, 'r', encoding='utf-8') as f:
-                existing_resumes = json.load(f)
-
-        existing_names = {r.get('name', '') for r in existing_resumes}
+        cum_path = output.resumes_path
+        existing = []
+        if os.path.exists(cum_path):
+            with open(cum_path, 'r', encoding='utf-8') as f:
+                existing = json.load(f)
+        existing_names = {r.get('name', '') for r in existing}
         for r in resumes:
             if r.get('name', '') not in existing_names:
-                existing_resumes.append(r)
+                existing.append(r)
                 existing_names.add(r.get('name', ''))
+        with open(cum_path, 'w', encoding='utf-8') as f:
+            json.dump(existing, f, ensure_ascii=False, indent=2)
+        print(f'累计 {len(existing)} 份：{cum_path}')
 
-        with open(cumulative_path, 'w', encoding='utf-8') as f:
-            json.dump(existing_resumes, f, ensure_ascii=False, indent=2)
-        print(f'累计 {len(existing_resumes)} 份简历已保存到：{cumulative_path}')
-
-        # 保存失败列表
         failed_path = output.get_process_path(f'batch_{batch_number}_failed.json')
-        with open(failed_path, 'w', encoding='utf-8') as f:
-            json.dump(failed, f, ensure_ascii=False, indent=2)
     else:
-        # 普通模式
         with open(output.resumes_path, 'w', encoding='utf-8') as f:
             json.dump(resumes, f, ensure_ascii=False, indent=2)
-        print(f'\n成功简历已保存到：{output.resumes_path}')
-
+        print(f'\n简历已保存：{output.resumes_path}')
         failed_path = output.get_process_path('failed_resumes.json')
-        with open(failed_path, 'w', encoding='utf-8') as f:
-            json.dump(failed, f, ensure_ascii=False, indent=2)
-        print(f'失败列表已保存到：{failed_path}')
+
+    with open(failed_path, 'w', encoding='utf-8') as f:
+        json.dump(failed, f, ensure_ascii=False, indent=2)
+    print(f'失败列表：{failed_path}')
 
     return resumes, failed
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='批量获取推荐牛人完整简历（支持分批）')
+    parser = argparse.ArgumentParser(description='推荐牛人简历下载（patchright + fetch）')
     parser.add_argument('--job-name', default='车架工程师', help='岗位名称')
-    parser.add_argument('--input', default=None, help='候选人列表文件（默认使用 process 文件夹）')
-    parser.add_argument('--max', type=int, default=None, help='最大获取数量')
-    parser.add_argument('--batch', type=int, default=None, help='分批模式：第几批（从1开始）')
+    parser.add_argument('--batch', type=int, default=None, help='分批：第几批')
+    parser.add_argument('--max', type=int, default=None, help='最大下载数')
 
     args = parser.parse_args()
-    download_resumes(args.job_name, args.input, args.max, args.batch)
+    download_resumes(args.job_name, args.batch, args.max)

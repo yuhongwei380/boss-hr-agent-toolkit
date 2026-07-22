@@ -11,6 +11,7 @@ import os
 
 # 添加 shared 目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
+import fix_encoding  # noqa: E402  # 强制 Windows UTF-8 stdout
 from output_manager import JobOutputManager
 
 # 添加 scripts 目录到路径

@@ -91,32 +91,23 @@ python scripts/recommend_list.py --job-name 车架工程师 --batch-size 25 --ba
 
 ## Step 2: 批量获取完整简历
 
-**脚本**：`scripts/recommend_download_v2.py`
+**脚本**：`scripts/recommend_download.py`
 
 **原理**：用 patchright 在真实 Edge 浏览器内执行 JavaScript `fetch()` 调用 BOSS API
 `/wapi/zpjob/view/geek/info`。请求通过浏览器发出，使用**真实的 Edge TLS 指纹 + 浏览器 Cookie**，
 与招聘者真人浏览 BOSS 直聘时发出的请求完全一致。
 
-### 为什么不用 CLI？
-
-| 对比项 | CLI（v1，已弃用） | patchright + fetch（v2） |
-|--------|:----------------:|:----------------------:|
-| TLS 指纹 | ❌ Python requests（可被识别） | ✅ 真实 Edge 浏览器 |
-| 编码问题 | ❌ Windows GBK 导致解析失败 | ✅ 无编码问题 |
-| 封号风险 | ⚠️ 中等 | 🟢 极低 |
-| 速度 | 5-20秒/人 | ~8秒/人 |
-
 ### 核心操作
 
 ```bash
 # 普通模式：下载全部
-python scripts/recommend_download_v2.py --job-name 车架工程师
+python scripts/recommend_download.py --job-name 车架工程师
 
 # 分批模式：下载第1批
-python scripts/recommend_download_v2.py --job-name 车架工程师 --batch 1
+python scripts/recommend_download.py --job-name 车架工程师 --batch 1
 
 # 限制数量
-python scripts/recommend_download_v2.py --job-name 车架工程师 --batch 1 --max 10
+python scripts/recommend_download.py --job-name 车架工程师 --batch 1 --max 10
 ```
 
 ### 完整简历数据结构
@@ -172,10 +163,10 @@ python scripts/recommend_download_v2.py --job-name 车架工程师 --batch 1 --m
 
 ## ⚠️ 安全策略
 
-### 为什么 v2 更安全
+### 真实浏览器指纹
 
-v2 使用 patchright 在**真实 Edge 浏览器**中执行 `fetch()` 请求。从 BOSS 服务器视角看：
-- TLS 指纹 = 真实 Edge 浏览器（不是 Python requests）
+patchright 在**真实 Edge 浏览器**中执行 `fetch()` 请求。从 BOSS 服务器视角看：
+- TLS 指纹 = 真实 Edge 浏览器
 - Cookie = 用户真实登录 session
 - 请求头 = 浏览器自动添加的标准头
 - 无法与真人操作区分
@@ -201,12 +192,12 @@ v2 使用 patchright 在**真实 Edge 浏览器**中执行 `fetch()` 请求。�
 ```bash
 # Batch 1：收集25人 → 下载 → 评分
 python scripts/recommend_list.py --job-name 车架工程师 --batch-size 25 --batch 1
-python scripts/recommend_download_v2.py --job-name 车架工程师 --batch 1
+python scripts/recommend_download.py --job-name 车架工程师 --batch 1
 # → AI 读取 batch_1_resumes.json 进行评分
 
 # Batch 2：继续滚动（不刷新页面）→ 下载 → 评分
 python scripts/recommend_list.py --job-name 车架工程师 --batch-size 25 --batch 2
-python scripts/recommend_download_v2.py --job-name 车架工程师 --batch 2
+python scripts/recommend_download.py --job-name 车架工程师 --batch 2
 # → AI 读取 batch_2_resumes.json 进行评分
 
 # Batch 3：同上...
@@ -218,7 +209,7 @@ python scripts/recommend_download_v2.py --job-name 车架工程师 --batch 2
 
 ### `今日查看已达上限`
 
-**原因**：BOSS 直聘每日查看简历数量限制（与下载方式无关，CLI 和 fetch 都会触发）。
+**原因**：BOSS 直聘每日查看简历数量限制。
 
 **解决**：等待第二天额度刷新后继续。
 
@@ -246,26 +237,3 @@ python scripts/recommend_download_v2.py --job-name 车架工程师 --batch 2
 | 25 人批次耗时 | 约 3-5 分钟 |
 | 封号风险 | 🟢 极低（真实浏览器指纹） |
 
----
-
-<!-- 
-  ============================================================
-  以下为 v1 CLI 方案（已弃用），仅供开发者参考。
-  智能体不应使用此方案，请使用上方的 v2 patchright + fetch 方案。
-  ============================================================
-
-  v1 脚本：scripts/recommend_download.py
-  原理：通过 boss-agent-cli 的 `boss hr resume` 命令获取简历
-  问题：Python requests 的 TLS 指纹可被 BOSS 识别，Windows 下存在 GBK 编码问题
-  
-  命令示例：
-    boss.exe --role recruiter --platform zhipin --cdp-url http://localhost:9222 \
-      hr resume <encryptGeekId> --security-id <securityId> --job-id <jobId>
-
-  已知问题：
-  1. TLS 指纹与真实浏览器不同，高频使用有封号风险
-  2. Windows 默认 GBK 编码导致简历中 • 等特殊字符解析失败
-  3. json.loads() 可能因混合编码失败
-
-  仅在 v2 方案不可用时（如 patchright 未安装）作为降级方案。
--->
