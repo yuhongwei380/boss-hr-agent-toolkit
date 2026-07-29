@@ -257,18 +257,27 @@ def main():
     ap = argparse.ArgumentParser(description="简历评分统一方案（LLM 4 维度 + school_tier 校准）")
     ap.add_argument("--input", default=None, help="LLM 评分 JSON（4 维度）。不传则按 orchestrator 的 run_id 自动定位 runs/<run_id>/process/_llm_scores.json")
     ap.add_argument("--output", default=None, help="标准化后的 screening_results.json。不传则按 orchestrator 自动定位到 run_dir")
-    ap.add_argument("--job-name", default="工程师", help="岗位名")
+    ap.add_argument("--job-name", default="工程师", help="岗位名（jobs.json metadata）")
+    ap.add_argument("--encrypt-job-id", default=None,
+                    help="BOSS encryptJobId（推荐；新设计目录名依此定位；亦可走 env BOSS_HR_ENCRYPT_JOB_ID）")
     ap.add_argument("--job-info", default=None, help="JD 完整信息 JSON 字符串（可选）")
     ap.add_argument("--run-id", default=None, help="本次 run ID（默认走 orchestrator；写入 meta，方便与 HTML 报告关联）")
+    ap.add_argument("--rescore", action="store_true",
+                    help="重评：不跳过历史已评分候选人（换 JD / 修评分口径时用）")
     args = ap.parse_args()
 
     # 默认走 orchestrator，确保落到跟前面 Step 同一 run 目录
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
-    from output_manager import OUTPUT_ROOT, JobOutputManager
+    from output_manager import OUTPUT_ROOT, JobOutputManager, resolve_encrypt_job_id
     from run_orchestrator import RunOrchestrator
-    orch = RunOrchestrator(args.job_name)
+    from job_resume_store import JobResumeStore
+    encrypt_job_id = resolve_encrypt_job_id(args.encrypt_job_id)
+    if not encrypt_job_id:
+        raise ValueError("缺少 encrypt_job_id。\n  传 --encrypt-job-id，或设置 env BOSS_HR_ENCRYPT_JOB_ID")
+    orch = RunOrchestrator(args.job_name, encrypt_job_id=encrypt_job_id)
     run_id = orch.bind_or_create(args.run_id)
-    out = JobOutputManager(args.job_name, run_id=run_id)
+    out = JobOutputManager(args.job_name, encrypt_job_id=encrypt_job_id, run_id=run_id)
+    store = JobResumeStore(args.job_name, encrypt_job_id=encrypt_job_id)
 
     # input/output 没传 → 用 orchestrator 推断的 run_dir
     if not args.input:
@@ -282,6 +291,91 @@ def main():
     if not isinstance(data, list):
         print("错误：输入 JSON 必须是候选人数组")
         return
+
+    # 姓名 → geek_id 反查表（_llm_scores.json 只有姓名时兜底用）
+    # 注意：BOSS 上"杨先生""吕女士"这类匿名昵称会重名，一个姓名可能对多个 geek_id，
+    # 所以值是 list 而非单个 ID。
+    # 优先使用 _llm_scores.json 里直接给的 geek_id 字段（更准，不依赖姓名）。
+    name_to_gids = {}
+    try:
+        _master = json.load(open(store.resumes_master_path, encoding="utf-8")).get("items", {})
+        for _key, _r in _master.items():
+            _n = (_r or {}).get("name", "")
+            if _n and ":" in _key:
+                name_to_gids.setdefault(_n, []).append(_key.split(":", 1)[1])
+    except Exception:
+        pass
+
+    def _find_prefix_for(item, g):
+        """在 _master 里找带 gid 的前缀（兼容 job_id 多 prefix 的情况）。
+
+        BOSS 直聘同一个岗位在 Step 1 (boss_jd.py) 和 Step 2 (recommend_download.py)
+        返回的 encryptJobId 可能不同，导致 _master 里出现两个 prefix。
+        这里优先 item['job_id']（LLM 评分时直接传），其次 store.encrypt_job_id，
+        最后暴力扫一遍 _master 的所有 key 兜底。
+        """
+        item_job_id = (item.get("job_id") or "").strip()
+        if item_job_id and f"{item_job_id}:{g}" in _master:
+            return item_job_id
+        if f"{store.encrypt_job_id}:{g}" in _master:
+            return store.encrypt_job_id
+        for k in _master.keys():
+            if k.endswith(f":{g}"):
+                return k.split(":", 1)[0]
+        return None
+
+    def _unscored_gid(item):
+        """返回该候选人「尚未评分」的 geek_id。
+
+        优先用 item['geek_id']（LLM 评分时直接传更准）；
+        兜底从 name_to_gids 反查（重名策略：只要还有未评分的同名候选人就放行）。
+
+        返回值：
+            str  : 找到了未评分的 geek_id（且确认在简历池中）
+            ''   : _llm_scores.json 里的 geek_id 在简历池里查无此人（可能是手写简历）
+            None : 该姓名下所有 geek_id 都已评过（应跳过）
+
+        校验逻辑：拿到 geek_id 后必须确认它存在于 resumes_master.json，
+        否则视为「_llm_scores.json 与简历池不一致」返回 ''，避免向
+        scored_state.json 写入未知候选人（会让下次 run 反查失败）。
+        """
+        gid = (item.get("geek_id") or "").strip()
+        if gid:
+            # 校验 1：必须在简历池里（支持多 prefix 兜底）
+            matched_prefix = _find_prefix_for(item, gid)
+            if not matched_prefix:
+                return ''
+            # 校验 2：还没评过
+            if not store.is_scored(matched_prefix, gid):
+                return gid
+            return None  # 该 ID 已评分
+        # 兜底：按姓名反查
+        name = item.get("name", "")
+        gids = name_to_gids.get(name)
+        if not gids:
+            return ''
+        for g in gids:
+            matched_prefix = _find_prefix_for(item, g)
+            if matched_prefix and not store.is_scored(matched_prefix, g):
+                return g
+        return None
+
+    # 跨 run 去重：跳过历史已评分的候选人（--rescore 可关闭）
+    if not args.rescore:
+        _kept, _skipped = [], []
+        for c in data:
+            if _unscored_gid(c) is None:
+                _skipped.append(c.get("name", ""))
+            else:
+                _kept.append(c)
+        if _skipped:
+            print(f"⏭ 跳过 {len(_skipped)} 位历史已评分候选人：{'、'.join(_skipped[:8])}"
+                  + ("..." if len(_skipped) > 8 else ""))
+            print("   （如需重评请加 --rescore）")
+        data = _kept
+        if not data:
+            print("本轮无新候选人可评分，退出。")
+            return
 
     # 对每份评分收尾（强制用 school_tier 校准 edu + 重算 total + 判定 tier）
     for c in data:
@@ -330,6 +424,28 @@ def main():
     print(f"✓ 处理 {len(data)} 份评分")
     print(f"  推荐 {summary['recommend']} / 待定 {summary['pending']} / 不推荐 {summary['reject']}")
     print(f"  输出: {args.output}")
+
+    # 回写评分状态（下次 run 自动跳过这批人）
+    #
+    # 已知限制：同一批里出现多个同名候选人时（BOSS 匿名昵称），
+    # 分数与 geek_id 的对应按循环顺序分配，可能错配。
+    # 影响可控 —— scored_state 的用途是"是否评过"的布尔判断，
+    # total/tier 仅供排查参考；准确的评分结果以 screening_results.json 为准。
+    _marked = 0
+    for c in data:
+        gid = _unscored_gid(c)
+        # '' = 简历池里查无此人；None = 同名者已全部评过（--rescore 时会走到）
+        if not gid:
+            continue
+        store.mark_scored(store.encrypt_job_id, gid,
+                          name=c.get("name", ""), total=c.get("total"),
+                          tier=c.get("tier", ""), run_id=run_id)
+        _marked += 1
+    if _marked:
+        print(f"  已记录 {_marked} 人评分状态 → state/scored_state.json")
+    if _marked < len(data):
+        print(f"  ⚠ {len(data) - _marked} 人未匹配到 geek_id，未记录（下次可能重复评分）")
+
     orch.mark_done('score', run_id=run_id)  # 标记 score 步骤完成
 
 

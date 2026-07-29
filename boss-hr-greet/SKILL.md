@@ -13,7 +13,7 @@ type: workflow
 ---
 # BOSS 直聘 HR · 自动打招呼
 
-> 本 Skill 是 boss-hr-auto 主流程的 **Step 5**，由 `auto_pipeline.py` 在评分报告生成后**自动调用**（默认真点击 BOSS，不 dry-run、不二次确认）。
+> 本 Skill 是 boss-hr-auto 主流程的 **Step 5**，在评分报告生成后由智能体调用（默认真点击 BOSS，不 dry-run、不二次确认）。
 >
 > 也支持单独运行（精准点名 / 回头招呼老名单 / 仅刷新位置表）。
 >
@@ -27,7 +27,8 @@ type: workflow
 
 | 环境项 | 默认值 | 怎么改 |
 |--------|--------|--------|
-| 工作区根 | `~/Desktop/boss-hr-output/<岗位名>/` | 设环境变量 `BOSS_HR_OUTPUT_DIR=<你想要的路径>`，**整个 toolkit 都会用新路径**（`shared/output_manager.py` 已支持） |
+| 工作区根 | `~/Desktop/boss-hr-output/<encryptJobId>/` | 设环境变量 `BOSS_HR_OUTPUT_DIR=<你想要的路径>`，**整个 toolkit 都会用新路径**（`shared/output_manager.py` 已支持） |
+| 岗位目录名 | **BOSS 的 `encryptJobId`**（不再用中文岗位名） | 通过 `--encrypt-job-id` 显式传，或设 env `BOSS_HR_ENCRYPT_JOB_ID` |
 | shared 路径 | 自动按 `scripts/` 的相对路径定位（`../../shared`） | 无需配，跟仓库走 |
 | 浏览器 CDP | `http://localhost:9222` | 暂无 env 覆盖；如需改请改 `auto_greet.py` 顶部 `CDP_URL` 常量 |
 
@@ -35,31 +36,45 @@ type: workflow
 
 ---
 
-## 主流程自动触发（推荐）
+## 主流程调用（推荐）
 
-由 `boss-hr-auto/scripts/auto_pipeline.py` 跑完 Step 4（HTML 报告）后自动调本步。
+智能体跑完 Step 4（HTML 报告）后调本步，**必须传与前面各 Step 相同的 `--run-id` 和 `--encrypt-job-id`**。
 
 - **默认行为**：CDP 真实点击 BOSS 打招呼按钮（按 score≥70 推荐 tier 招呼，最多 10 人）
-- **跳过**：`auto_pipeline.py --skip-greet`
+- **跳过**：不调用本 Skill 即可
 
 ---
 
 ## 单独招呼（不走主流程）
 
+> 🚨 **新接口必传 `--encrypt-job-id`**：与 Step 1/2/3 保持一致。也可以设 env `BOSS_HR_ENCRYPT_JOB_ID` 作为 fallback。缺则直接 `ValueError` 退出（严格模式）。
+
 ```bash
+# 公共参数
+export ENCRYPT_ID="9a7759badfd95d350nFz3d-_F1NX"
+export JOB_NAME="线控底盘制动、转向工程师"
+
 # === 模式 1：默认（一键：自动扫位置 + 倒序招呼）===
 python -X utf8 "<项目根>/boss-hr-greet/scripts/auto_greet.py" \
+  --job-name "$JOB_NAME" \
+  --encrypt-job-id "$ENCRYPT_ID" \
   --only-names "朱子睿,孙庆乐"
 
 # === 模式 2：默认按分招呼（≥70 推荐 tier 自动招呼，最多 10 人）===
-python -X utf8 "<项目根>/boss-hr-greet/scripts/auto_greet.py"
+python -X utf8 "<项目根>/boss-hr-greet/scripts/auto_greet.py" \
+  --job-name "$JOB_NAME" \
+  --encrypt-job-id "$ENCRYPT_ID"
 
 # === 模式 3：只扫描（不下发，用于调试 / 刷新位置表）===
 python -X utf8 "<项目根>/boss-hr-greet/scripts/auto_greet.py" \
+  --job-name "$JOB_NAME" \
+  --encrypt-job-id "$ENCRYPT_ID" \
   --only-names "朱子睿" --scan-only
 
 # === 模式 4：用已有位置表直接招呼（list 状态未变时省 2 秒扫描）===
 python -X utf8 "<项目根>/boss-hr-greet/scripts/auto_greet.py" \
+  --job-name "$JOB_NAME" \
+  --encrypt-job-id "$ENCRYPT_ID" \
   --only-names "朱子睿" --skip-scan
 ```
 
@@ -85,7 +100,8 @@ python -X utf8 "<项目根>/boss-hr-greet/scripts/auto_greet.py" \
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
-| `--job-name` | 线控底盘制动、转向工程师 | 岗位名（决定 state/ 和 runs/ 路径） |
+| `--job-name` | 线控底盘制动、转向工程师 | 岗位中文名（仅作 `jobs.json` 元数据） |
+| `--encrypt-job-id` | **必填** | BOSS 的 `encryptJobId`（= 工作区目录名）；env `BOSS_HR_ENCRYPT_JOB_ID` 可作 fallback |
 | `--threshold` | 70 | score 阈值（≥ 阈值的候选人会被打招呼）；`--only-names` 模式下忽略 |
 | `--max` | 10 | 最多打招呼人数；`--only-names` 模式下自动 = 名单长度 |
 | `--only-names` | - | 逗号分隔，精准点名（与 threshold 同时生效时 --only-names 优先） |
@@ -95,6 +111,7 @@ python -X utf8 "<项目根>/boss-hr-greet/scripts/auto_greet.py" \
 | `--skip-scan` | - | 跳过扫描，直接用已有位置表打招呼 |
 
 > `--scan-only` 与 `--skip-scan` 互斥（脚本会校验报错）。
+> **严格模式**：缺 `--encrypt-job-id`（且未设 env）直接 `ValueError` 退出，不会静默回退到中文目录名。
 
 ---
 
@@ -234,15 +251,17 @@ frame.evaluate(r"""() => {
 
 ---
 
-## 工作区路径约定
+## 工作区路径约定（新设计 · 2026-07-29+）
 
 ```
 <工作区根>/
-└── <岗位名>/
+├── jobs.json                               # JobRegistry：encryptJobId → {name, company}
+└── <encryptJobId>/                         # 目录名 = BOSS 的 encryptJobId
     ├── state/
     │   ├── candidate_pool.json              # 累计候选人
     │   ├── resumes_master.json              # 累计简历
     │   ├── download_state.json              # 下载状态
+    │   ├── scored_state.json                # 已评分状态
     │   └── geek_positions.json              # 候选人 doc_y/doc_x 映射（本 Skill 维护）
     └── runs/
         └── <run_id>/
@@ -253,6 +272,7 @@ frame.evaluate(r"""() => {
 `geek_positions.json` 跨 run 保留，但每次 `--scan-only` 或默认模式会刷新。
 
 > 工作区根默认是 `~/Desktop/boss-hr-output`，可通过 `BOSS_HR_OUTPUT_DIR` 环境变量改。
+> 岗位目录名 = `encryptJobId`，通过 `--encrypt-job-id` 显式传入。
 
 ---
 

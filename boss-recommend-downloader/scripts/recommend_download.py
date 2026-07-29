@@ -89,16 +89,20 @@ FETCH_JS = """async (params) => {
 
 def download_resumes(job_name, batch_number=None, max_count=None,
                      pause_every=5, pause_min=60, pause_max=120,
-                     run_id=None, from_pool=False):
+                     run_id=None, from_pool=False, encrypt_job_id=None):
     # 默认走 orchestrator，自动跟走上游创建的 run_id
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
     from run_orchestrator import RunOrchestrator
-    orch = RunOrchestrator(job_name)
+    from output_manager import resolve_encrypt_job_id
+    encrypt_job_id = resolve_encrypt_job_id(encrypt_job_id)
+    if not encrypt_job_id:
+        raise ValueError("缺少 encrypt_job_id。\n  传 --encrypt-job-id，或设置 env BOSS_HR_ENCRYPT_JOB_ID")
+    orch = RunOrchestrator(job_name, encrypt_job_id=encrypt_job_id)
     run_id = orch.bind_or_create(run_id)
 
-    output = JobOutputManager(job_name, run_id=run_id)
+    output = JobOutputManager(job_name, encrypt_job_id=encrypt_job_id, run_id=run_id)
     output.ensure_run_dir()
-    store = JobResumeStore(job_name)
+    store = JobResumeStore(job_name, encrypt_job_id=encrypt_job_id)
 
     # 异常护栏：脚本崩溃时若没写出 new_resumes.json，自动清空 run_dir
     import atexit
@@ -310,6 +314,8 @@ def download_resumes(job_name, batch_number=None, max_count=None,
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='推荐牛人简历下载（去重 + 三态）')
     parser.add_argument('--job-name', default='线控底盘制动、转向工程师')
+    parser.add_argument('--encrypt-job-id', default=None,
+                        help='BOSS encryptJobId（推荐；新设计目录名依此定位；亦可走 env BOSS_HR_ENCRYPT_JOB_ID）')
     parser.add_argument('--batch', type=int, default=None)
     parser.add_argument('--max', type=int, default=None)
     parser.add_argument('--pause-every', type=int, default=5)
@@ -325,4 +331,5 @@ if __name__ == '__main__':
                      pause_min=args.pause_min,
                      pause_max=args.pause_max,
                      run_id=args.run_id,
-                     from_pool=args.from_pool)
+                     from_pool=args.from_pool,
+                     encrypt_job_id=args.encrypt_job_id)

@@ -30,7 +30,7 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from output_manager import JobOutputManager
+from output_manager import JobOutputManager, resolve_encrypt_job_id
 
 CURRENT_RUN_FILENAME = "current_run.json"
 COLLECTION_STATE_FILENAME = "collection_state.json"  # 旧版兼容：保留以备其他脚本读取
@@ -41,9 +41,22 @@ def _now_str() -> str:
 
 
 class RunOrchestrator:
-    def __init__(self, job_name: str):
+    """跨 Step 串同一 run_id 的编排器。
+
+    路径定位（2026-07-29 新设计）：
+      - 推荐传 encrypt_job_id（CLI --encrypt-job-id > env BOSS_HR_ENCRYPT_JOB_ID）
+      - 不传 → 沿用兼容模式（job_name 当目录名），但不推荐
+    """
+
+    def __init__(self, job_name: str, encrypt_job_id: Optional[str] = None):
         self.job_name = job_name
-        self._mgr = JobOutputManager(job_name, lazy=True)
+        # encrypt_job_id 优先 CLI 透传 > env（兼容模式 None）
+        self.encrypt_job_id = resolve_encrypt_job_id(encrypt_job_id)
+        self._mgr = JobOutputManager(
+            job_name,
+            encrypt_job_id=self.encrypt_job_id,
+            lazy=True,
+        )
         self.current_run_path = os.path.join(self._mgr.state_dir, CURRENT_RUN_FILENAME)
         self.collection_path = os.path.join(self._mgr.state_dir, COLLECTION_STATE_FILENAME)
 
@@ -59,6 +72,9 @@ class RunOrchestrator:
 
     def _save_current(self, state: dict) -> None:
         os.makedirs(os.path.dirname(self.current_run_path), exist_ok=True)
+        # 不主动建 runs/<run_id>/ —— 留给子脚本第一次落盘时由
+        # JobOutputManager.ensure_run_dir() 建。这样 bind_or_create 后
+        # 若子脚本未实际写文件（dry-run / 异常退出），不会留空壳目录。
         tmp = self.current_run_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
@@ -79,40 +95,70 @@ class RunOrchestrator:
     # ---------- 关键入口 ----------
     def bind_or_create(self, run_id: Optional[str] = None,
                        job_id: Optional[str] = None,
-                       force: bool = False) -> str:
+                       force: bool = False, verbose: bool = True) -> str:
         """返回当前 run_id，自动维护 current_run.json。
 
         优先级：
           1) 显式 run_id → 直接用并写入 current_run.json。
-          2) current_run.json 里有过未 finish 的 run → 沿用。
+          2) current_run.json 里有过未 finish 且目录里有真实产物的 run → 沿用。
           3) 否则 → 新建一个 run_id（同秒冲突自动加 _N）。
+
+        verbose=True 时打印一行说明（[orchestrator] ...），方便排查
+        「为什么是这个 run_id」。
         """
+        import sys as _sys
+        _log = (lambda m: print(f'[orchestrator] {m}', file=_sys.stderr)) if verbose else (lambda m: None)
+
         # 1) 显式
         if run_id:
+            # 如果 current_run.json 里已记录同一 run_id，保留 started_at
+            # —— 否则它会被 _now_str 覆盖，造成 run_id=11:37 / started_at=11:57 的错位。
+            cur = self._load_current()
+            existing_started_at = (
+                cur.get("started_at") if cur.get("run_id") == run_id else None
+            )
             state = {
                 "run_id": run_id,
                 "job_name": self.job_name,
                 "job_id": job_id,
-                "started_at": _now_str(),
-                "steps_done": [],
-                "last_step": None,
-                "last_step_at": _now_str(),
+                "started_at": existing_started_at or _now_str(),
+                "steps_done": cur.get("steps_done", []) if cur.get("run_id") == run_id else [],
+                "last_step": cur.get("last_step") if cur.get("run_id") == run_id else None,
+                "last_step_at": cur.get("last_step_at", _now_str()) if cur.get("run_id") == run_id else _now_str(),
             }
             self._save_current(state)
+            _log(f'显式 run_id={run_id}')
             return run_id
 
         # 2) 沿用
         cur = self._load_current()
         existing = cur.get("run_id")
         if existing and not force:
-            # 只要当前活跃 run 至少有"启动过"的痕迹（steps_done 非空，
-            # 或 job_id 已绑定，或未显式 finished），就沿用同一 run_id。
-            # 这样 5 步流程里 Step 2/3/4/5 都能落入同一 runs/<run_id>/。
-            steps_done = cur.get("steps_done") or []
+            # 沿用同一 run_id 的条件：
+            #   (a) current_run.json 未 finished
+            #   (b) runs/<run_id>/ 目录存在
+            #   (c) 目录里必须有「真实产物」（process/ 子目录或 .html 报告）
+            #       —— 否则视为空壳目录（run_orchestrator 或异常退出留下的），
+            #       必须新建而不是沿用，避免「bind_or_create 创空目录后沿用」的死循环。
             finished = cur.get("finished", False)
-            if steps_done or cur.get("job_id"):
-                if not finished:
+            run_dir = os.path.join(self._mgr.job_dir, "runs", existing)
+            if not finished and os.path.isdir(run_dir):
+                # 目录里必须有「真实产物」（process/ 子目录或 .html 报告），
+                # 否则视为空壳目录（run_orchestrator 或异常退出留下的），
+                # 必须新建而不是沿用，避免「bind_or_create 创空目录后沿用」的死循环。
+                has_real_output = (
+                    os.path.isdir(os.path.join(run_dir, "process"))
+                    or any(f.endswith(".html") for f in os.listdir(run_dir))
+                )
+                if has_real_output:
+                    _log(f'沿用活跃 run={existing}')
                     return existing
+                else:
+                    _log(f'current_run={existing} 目录是空壳，跳过')
+            elif finished:
+                _log(f'current_run={existing} 已 finished')
+            else:
+                _log(f'current_run={existing} 目录不存在')
             # 否则视为全新状态 → 走下面"新建"路径
 
         # 3) 新建
@@ -127,6 +173,7 @@ class RunOrchestrator:
             "last_step_at": _now_str(),
         }
         self._save_current(state)
+        _log(f'新建 run={new_id}')
         return new_id
 
     # ---------- 步骤标记 ----------

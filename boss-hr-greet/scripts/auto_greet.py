@@ -536,7 +536,7 @@ def greet_one_by_position(page, frame, iframe_box, name, pos, dry_run=False, ifr
 
 def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
                run_id=None, only_names=None, dry_run=False, scroll_max=60,
-               scan_only=False, skip_scan=False):
+               scan_only=False, skip_scan=False, encrypt_job_id=None):
     """打招呼主流程。
 
     关键设计（按用户的"不刷新 list 稳定"前提）：
@@ -553,14 +553,18 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
     # 路径解析：直接交给 JobOutputManager 处理（统一 OUTPUT_ROOT 含义）。
     # 2026-07-28 修复：之前手拼路径时错把 BOSS_HR_OUTPUT_DIR 当 job_dir，
     #   导致 greet_log 落到 boss-hr-output/runs/<run>/process/。
-    output = JobOutputManager(job_name, run_id=run_id, lazy=True)
+    from output_manager import resolve_encrypt_job_id
+    encrypt_job_id = resolve_encrypt_job_id(encrypt_job_id)
+    if not encrypt_job_id:
+        raise ValueError("缺少 encrypt_job_id。\n  传 --encrypt-job-id，或设置 env BOSS_HR_ENCRYPT_JOB_ID")
+    output = JobOutputManager(job_name, encrypt_job_id=encrypt_job_id, run_id=run_id, lazy=True)
 
     # ★ 跨 Step run_id 编排：跟走 state/current_run.json
     #   1) --run-id 显式 → 用它
     #   2) 否则跟走当前活跃 run（boss_jd / score_resumes 跑完会留下 current_run.json）
     #   3) 都没有 → 新建（独立场景：老用户直接调 auto_greet 招呼）
     from run_orchestrator import RunOrchestrator
-    orch = RunOrchestrator(job_name)
+    orch = RunOrchestrator(job_name, encrypt_job_id=encrypt_job_id)
     run_id = orch.bind_or_create(run_id)
     output.run_id = run_id
 
@@ -741,6 +745,45 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
     except Exception as e:
         log(output, f'⚠️  mark_done 失败（不影响招呼结果）: {e}')
 
+    # 是否自动 finish()
+    # 2026-07-29 改进：默认招呼成功后自动 finish()，下次跑自动开新 run。
+    # 显式 --no-finish 可保留「回头补招呼同一 run」能力。
+    greeted_count = summary.get('greeted', 0)
+    auto_finished = False
+    if args.no_finish:
+        log(output, '')
+        log(output, '━' * 60)
+        log(output, 'A 流程 5 步全部完成。本次 run 仍标记为「未 finish」，')
+        log(output, '意味着下次跑 greet 会沿用此 run（用于回头补招呼）。')
+        log(output, '')
+        log(output, '要开新 run？执行：')
+        log(output, f'    python -X utf8 -c "import sys;sys.path.insert(0,\'shared\');from run_orchestrator import RunOrchestrator;RunOrchestrator(\'{job_name}\').finish()"')
+        log(output, '━' * 60)
+    elif greeted_count > 0 and not args.dry_run:
+        # 真招呼且至少招呼成功 1 人 → 自动 finish()
+        try:
+            orch.finish()
+            auto_finished = True
+            log(output, '')
+            log(output, '━' * 60)
+            log(output, f'✅ A 流程 5 步全部完成，已自动 finish()。')
+            log(output, f'招呼成功 {greeted_count} 人，下次跑会自动开新 run。')
+            log(output, '━' * 60)
+        except Exception as e:
+            log(output, f'⚠️  自动 finish() 失败（不影响招呼结果）: {e}')
+            log(output, f'    可手动执行: RunOrchestrator(\'{job_name}\').finish()')
+    elif args.dry_run:
+        log(output, '')
+        log(output, '━' * 60)
+        log(output, '⏸  DRY-RUN 模式未发送招呼，未 finish()（保留回头招呼能力）。')
+        log(output, '━' * 60)
+    else:
+        log(output, '')
+        log(output, '━' * 60)
+        log(output, f'⏸  本轮招呼成功 0 人，未 finish()。')
+        log(output, f'    如确认本轮结束，手动: RunOrchestrator(\'{job_name}\').finish()')
+        log(output, '━' * 60)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -759,6 +802,8 @@ if __name__ == '__main__':
 """,
     )
     parser.add_argument('--job-name', default=DEFAULT_JOB)
+    parser.add_argument('--encrypt-job-id', default=None,
+                        help='BOSS encryptJobId（推荐；新设计目录名依此定位；亦可走 env BOSS_HR_ENCRYPT_JOB_ID）')
     parser.add_argument('--threshold', type=float, default=70.0,
                         help='score 阈值（>= 阈值的候选人会被招呼；与 --only-names 互斥，--only-names 优先）')
     parser.add_argument('--max', type=int, default=10)
@@ -774,6 +819,8 @@ if __name__ == '__main__':
                         help='只扫描记位置到 geek_positions.json，不打招呼')
     parser.add_argument('--skip-scan', action='store_true',
                         help='跳过扫描，直接用已有 geek_positions.json 招呼（list 状态未变时可省 2s）')
+    parser.add_argument('--no-finish', action='store_true',
+                        help='招呼跑完后不自动 finish()，保留「回头补招呼同一 run」能力（默认招呼成功后自动 finish）')
     args = parser.parse_args()
 
     # 互斥校验：--scan-only 与 --skip-scan 不能同时给
@@ -799,4 +846,5 @@ if __name__ == '__main__':
         scroll_max=args.scroll_max,
         scan_only=args.scan_only,
         skip_scan=args.skip_scan,
+        encrypt_job_id=args.encrypt_job_id,
     )

@@ -111,8 +111,10 @@ boss ... (no flags)
 
 > 本 SKILL 是底层 CLI 参考。boss-hr-agent-toolkit 的**端到端编排流程**（推荐牛人列表 → 下载 → LLM 评分 → HTML 报告 → 自动打招呼）见 `boss-hr-auto/SKILL.md`：
 >
-> - 候选人累计池 + 简历去重落在 `~/Desktop/boss-hr-output/<岗位名>/state/`（跨 run 不覆盖）
+> - **新设计（2026-07-29+）**：工作区目录名 = `encryptJobId`（不再是中文岗位名）。`job_name`（中文岗位名）只作为 `jobs.json` 里的可读元数据。
+> - 候选人累计池 + 简历去重落在 `~/Desktop/boss-hr-output/<encryptJobId>/state/`（跨 run 不覆盖）
 > - 每次筛选任务一个 `runs/<run_id>/` 目录，过程文件落 `runs/<run_id>/process/`
 > - 唯一键 `candidate_key = "{encrypt_job_id}:{encrypt_geek_id}"`，禁止用姓名
+> - 6 个 CLI 脚本（`boss_jd.py` / `recommend_list.py` / `recommend_download.py` / `score_resumes.py` / `generate_html_report.py` / `auto_greet.py`）**必传 `--encrypt-job-id`**（或 env `BOSS_HR_ENCRYPT_JOB_ID`），缺则 `ValueError` 退出，**不静默回退到中文目录名**
 >
 > 完整工作流见 `boss-recommend-downloader/SKILL.md` 和 `boss-hr-auto/SKILL.md`。

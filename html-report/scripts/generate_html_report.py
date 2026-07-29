@@ -360,22 +360,38 @@ def main():
     ap = argparse.ArgumentParser(description="HTML 报告生成（统一方案）")
     ap.add_argument("--input", default=None, help="score_resumes.py 输出的 screening_results.json。不传则按 orchestrator 自动定位")
     ap.add_argument("--output", default=None, help="HTML 报告输出路径。不传则按 orchestrator 自动定位")
-    ap.add_argument("--job-name", default=None, help="岗位名（orchestrator 模式必填）")
+    ap.add_argument("--job-name", default=None, help="岗位名（jobs.json metadata）")
+    ap.add_argument("--encrypt-job-id", default=None,
+                    help="BOSS encryptJobId（推荐；新设计目录名依此定位；亦可走 env BOSS_HR_ENCRYPT_JOB_ID）")
     ap.add_argument("--run-id", default=None, help="本次 run ID（默认走 orchestrator）")
     args = ap.parse_args()
 
     # 默认走 orchestrator，确保 HTML 报告落到跟前面 Step 同一 run 目录
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
-    from output_manager import JobOutputManager
+    from output_manager import JobOutputManager, resolve_encrypt_job_id
     from run_orchestrator import RunOrchestrator
 
-    job_name = args.job_name or (args.input and Path(args.input).parent.parent.parent.name) or None
-    if not job_name:
-        raise SystemExit("需要 --job-name 或 --input 指向 runs/<run_id>/process/screening_results.json")
+    # 新设计：encrypt_job_id 必传。兼容模式仍可用，但不推荐静默回退。
+    encrypt_job_id = resolve_encrypt_job_id(args.encrypt_job_id)
 
-    orch = RunOrchestrator(job_name)
+    job_name = args.job_name
+    if not job_name:
+        if args.input and not encrypt_job_id:
+            # 仅兼容模式可以从 input 路径反推岗位名
+            job_name = Path(args.input).parent.parent.parent.parent.name
+        if not job_name:
+            raise SystemExit("需要 --job-name 或 --input 指向 runs/<run_id>/process/screening_results.json")
+        if not encrypt_job_id:
+            # 兼容模式：用 job_name 反查 encrypt_job_id
+            encrypt_job_id = resolve_encrypt_job_id() or None
+
+    if encrypt_job_id is None:
+        # 没有任何 encrypt_job_id 来源 → 报错
+        raise ValueError("缺少 encrypt_job_id。\n  传 --encrypt-job-id，或设置 env BOSS_HR_ENCRYPT_JOB_ID")
+
+    orch = RunOrchestrator(job_name, encrypt_job_id=encrypt_job_id)
     run_id = orch.bind_or_create(args.run_id)
-    out = JobOutputManager(job_name, run_id=run_id)
+    out = JobOutputManager(job_name, encrypt_job_id=encrypt_job_id, run_id=run_id)
 
     if not args.input:
         args.input = str(out.screening_results_path)
@@ -392,9 +408,9 @@ def main():
     print(f"   文件大小: {Path(args.output).stat().st_size} 字节")
     print(f"   候选人: {len(data.get('candidates', []))} 人")
 
-    # 收官：标记报告完成 + 清掉 current_run.json
+    # 标记报告完成，但不 finish()——Step 5 (greet) 还在同一 run 里
+    # finish() 由 step 5 结束或用户主动调用
     orch.mark_done('report', run_id=run_id)
-    orch.finish()
 
 
 if __name__ == "__main__":

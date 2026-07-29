@@ -51,6 +51,7 @@ type: tool
 - ✅ patchright 安装（`pip install patchright`）
 - ✅ Edge 浏览器以 CDP 模式启动（端口 9222）
 - ✅ BOSS 直聘扫码登录完成
+- ✅ Step 1 (`boss-job-detail`) 已跑通，拿到 `encryptJobId`（即本步要传的 `--encrypt-job-id`）
 
 **如果未完成上述准备，请先执行 `boss-hr-auto` skill。**
 
@@ -64,13 +65,24 @@ type: tool
 
 ### 核心操作
 
+> 🚨 **新接口必传 `--encrypt-job-id`**：工作区目录名 = `encryptJobId`，不再是中文岗位名。`--job-name` 只作元数据写到 `jobs.json`。
+> 也可以设 env `BOSS_HR_ENCRYPT_JOB_ID` 作为 fallback。
+
 ```bash
 # 普通模式：获取所有候选人
-python scripts/recommend_list.py --job-name 车架工程师
+python scripts/recommend_list.py \
+  --job-name "线控底盘制动、转向工程师" \
+  --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX"
 
 # 分批模式：每批25人，不刷新页面（顺序固定）
-python scripts/recommend_list.py --job-name 车架工程师 --batch-size 25 --batch 1
-python scripts/recommend_list.py --job-name 车架工程师 --batch-size 25 --batch 2
+python scripts/recommend_list.py \
+  --job-name "线控底盘制动、转向工程师" \
+  --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX" \
+  --batch-size 25 --batch 1
+python scripts/recommend_list.py \
+  --job-name "线控底盘制动、转向工程师" \
+  --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX" \
+  --batch-size 25 --batch 2
 # batch 2+ 会连接已有页面继续滚动，不重新加载
 ```
 
@@ -99,15 +111,25 @@ python scripts/recommend_list.py --job-name 车架工程师 --batch-size 25 --ba
 
 ### 核心操作
 
+> 🚨 **新接口必传 `--encrypt-job-id`**：与 Step 1 同一 encryptJobId，确保产物落在同一工作区。
+
 ```bash
 # 普通模式：下载全部
-python scripts/recommend_download.py --job-name 车架工程师
+python scripts/recommend_download.py \
+  --job-name "线控底盘制动、转向工程师" \
+  --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX"
 
 # 分批模式：下载第1批
-python scripts/recommend_download.py --job-name 车架工程师 --batch 1
+python scripts/recommend_download.py \
+  --job-name "线控底盘制动、转向工程师" \
+  --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX" \
+  --batch 1
 
 # 限制数量
-python scripts/recommend_download.py --job-name 车架工程师 --batch 1 --max 10
+python scripts/recommend_download.py \
+  --job-name "线控底盘制动、转向工程师" \
+  --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX" \
+  --batch 1 --max 10
 ```
 
 ### 完整简历数据结构
@@ -176,7 +198,7 @@ patchright 在**真实 Edge 浏览器**中执行 `fetch()` 请求。从 BOSS 服
 | 操作 | 延迟范围 | 说明 |
 |------|---------|------|
 | 页面滚动 | 3-6 秒 | 模拟真人浏览速度 |
-| 获取简历 | 5-15 秒 | 模拟真人看简历（有的快扫，有的细看） |
+| 获取简历 | 60-120 秒（每 5 份触发一次长延迟） | 模拟真人看简历 + 风控 |
 
 ### 运行建议
 
@@ -190,14 +212,26 @@ patchright 在**真实 Edge 浏览器**中执行 `fetch()` 请求。从 BOSS 服
 ## 📝 完整分批工作流示例
 
 ```bash
+# 公共参数（5 步全流程同一个 encryptJobId）
+export ENCRYPT_ID="9a7759badfd95d350nFz3d-_F1NX"
+export JOB_NAME="线控底盘制动、转向工程师"
+
 # Batch 1：收集25人 → 下载 → 评分
-python scripts/recommend_list.py --job-name 车架工程师 --batch-size 25 --batch 1
-python scripts/recommend_download.py --job-name 车架工程师 --batch 1
+python scripts/recommend_list.py \
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" \
+  --batch-size 25 --batch 1
+python scripts/recommend_download.py \
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" \
+  --batch 1
 # → AI 读取 batch_1_resumes.json 进行评分
 
 # Batch 2：继续滚动（不刷新页面）→ 下载 → 评分
-python scripts/recommend_list.py --job-name 车架工程师 --batch-size 25 --batch 2
-python scripts/recommend_download.py --job-name 车架工程师 --batch 2
+python scripts/recommend_list.py \
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" \
+  --batch-size 25 --batch 2
+python scripts/recommend_download.py \
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" \
+  --batch 2
 # → AI 读取 batch_2_resumes.json 进行评分
 
 # Batch 3：同上...

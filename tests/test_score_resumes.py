@@ -143,9 +143,54 @@ def test_validate_score_school_outside_table_marks_missing():
         "dims": {"edu": 75, "exp": 80, "skill": 65, "proj": 60, "major": 100},
     }
     out = sr.validate_score(score)
-    # edu 不应被改（lookup 返回 None）
-    assert out["dims"]["edu"] == 75
+    # 表外学校：不信任 LLM 给的 edu，按 60 兜底并标"需复核"（见 SKILL.md）
+    assert out["dims"]["edu"] == 60
     assert "缺失" in out["dims_edu_reason"]
+
+
+def test_dedup_duplicate_name_not_falsely_skipped():
+    """重名候选人（BOSS 的"杨先生""吕女士"匿名昵称）不能被误杀。
+
+    回归：曾用 setdefault 建姓名→单个 ID 的映射，导致同名的第二人
+    永远匹配到第一人的 ID，若第一人已评分则第二人被误判为"已评分"。
+    """
+    import tempfile
+    sys.path.insert(0, os.path.abspath(os.path.join(_HERE, "..", "shared")))
+    import output_manager
+    from job_resume_store import JobResumeStore
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _saved = output_manager.OUTPUT_ROOT
+        output_manager.OUTPUT_ROOT = tmpdir
+        try:
+            store = JobResumeStore('测试重名Job', encrypt_job_id='job-1')
+            # 两个同名不同 ID 的候选人，只有第一个评过分
+            store.mark_scored('job-1', 'geek-A', name='杨先生', total=82.5,
+                              tier='推荐', run_id='run-1')
+
+            name_to_gids = {'杨先生': ['geek-A', 'geek-B']}
+
+            def _unscored_gid(name):
+                gids = name_to_gids.get(name)
+                if not gids:
+                    return ''
+                for g in gids:
+                    if not store.is_scored('job-1', g):
+                        return g
+                return None
+
+            # geek-B 未评分 → 应放行并返回 geek-B（不是 geek-A）
+            assert _unscored_gid('杨先生') == 'geek-B', '同名未评分者应被放行'
+
+            # 两个都评过后才拦截
+            store.mark_scored('job-1', 'geek-B', name='杨先生', total=80.5,
+                              tier='推荐', run_id='run-2')
+            assert _unscored_gid('杨先生') is None, '同名全部评过才应拦截'
+
+            # 简历池里查无此人 → '' （与 None 区分，便于告警）
+            assert _unscored_gid('查无此人') == ''
+        finally:
+            output_manager.OUTPUT_ROOT = _saved
 
 
 def test_validate_score_no_school_field_marks_missing():

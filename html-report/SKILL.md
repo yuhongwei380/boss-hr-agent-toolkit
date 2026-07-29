@@ -51,8 +51,16 @@ description: |
 **CLI**：
 
 ```bash
-python generate_html_report.py --input <screening_results.json> --output <report.html>
+python generate_html_report.py \
+  --input <screening_results.json> \
+  --output <report.html> \
+  --job-name "<岗位名>" \
+  --encrypt-job-id "<BOSS 的 encryptJobId>" \
+  --run-id <run_id>
 ```
+
+> 🚨 **新接口必传 `--encrypt-job-id`**：与 Step 1/2/3 保持一致。也可以设 env `BOSS_HR_ENCRYPT_JOB_ID` 作为 fallback。
+> 兼容模式：如果不传，脚本会从 `--input` 路径里反推 `job_name`（旧中文目录）作为兜底，但**新设计必须显式传**，避免与新 job 混目录。
 
 ### `templates/report.html`（HTML 模板）
 
@@ -83,29 +91,23 @@ html-report/scripts/generate_html_report.py
 preview_url 在 IDE 内置浏览器打开
 ```
 
-## 工作区路径约定
+## 工作区路径约定（新设计 · 2026-07-29+）
 
-**所有数据统一存放在 `~/Desktop/boss-hr-output/<job_name>/` 下**，由 `shared/output_manager.JobOutputManager` 管理。
+**所有数据统一存放在 `~/Desktop/boss-hr-output/<encryptJobId>/` 下**，**目录名直接用 BOSS 的 `encryptJobId`**（不再用中文岗位名）。`job_name` 仅作为 `jobs.json` 里的可读元数据。
 
 ```
-~/Desktop/boss-hr-output/<岗位名>/
-├── state/                                  # 跨 run 保留
-│   ├── candidate_pool.json
-│   ├── download_state.json
-│   ├── resumes_master.json
-│   └── collection_state.json
-└── runs/
-    └── <run_id>/                           # 一次筛选任务
-        ├── <run_id>_<岗位名>_简历筛选报告.html  ← 本 skill 输出
+~/Desktop/boss-hr-output/
+├── jobs.json                               # JobRegistry：encryptJobId → {name, company}
+└── <encryptJobId>/
+    ├── state/                              # 跨 run 保留
+    └── runs/<run_id>/                      # 一次筛选任务
+        ├── <run_id>_screening_report.html  ← 本 skill 输出
         └── process/
-            ├── job_detail.json
-            ├── recommend_geek_ids.json
-            ├── new_resumes.json
-            ├── failed_resumes.json
-            ├── screening_results.json     ← 本 skill 读取
-            ├── run_summary.json
-            └── run_log.txt
+            ├── screening_results.json      ← 本 skill 读取
+            └── ...
 ```
+
+> **路径选择集中在 `shared/output_manager.JobOutputManager`**——CLI 脚本只接收并透传 `--encrypt-job-id`，不参与路径拼接。
 
 | Step | Skill | 脚本 | 输出文件 |
 |:----:|-------|------|----------|
@@ -234,15 +236,17 @@ preview_url 在 IDE 内置浏览器打开
 
 ```bash
 python generate_html_report.py \
-    --input "runs/<run_id>/process/screening_results.json" \
-    --output "runs/<run_id>/<run_id>_<岗位名>_简历筛选报告.html"
+    --job-name "线控底盘制动、转向工程师" \
+    --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX" \
+    --run-id "2026-07-29_150915"
+    # --input/--output 不传则用默认路径（JobOutputManager 自动拼）
 ```
 
 输出：
 
 ```
-HTML 报告已生成: .../runs/2026-07-27_083015/2026-07-27_083015_线控底盘制动、转向工程师_简历筛选报告.html
-文件大小: 30430 字节
+HTML 报告已生成: .../9a7759badfd95d350nFz3d-_F1NX/runs/2026-07-29_150915/2026-07-29_150915_screening_report.html
+文件大小: 25314 字节
 候选人: 5 人
 ```
 

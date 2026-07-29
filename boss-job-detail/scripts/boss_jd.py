@@ -101,7 +101,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Get BOSS job detail (JD) via CDP')
     parser.add_argument('query', help='encryptJobId | jobId | 职位名')
     parser.add_argument('--job-name', default=None,
-                        help='工作区目录名（默认自动用 jobName 清洗为合法目录名）')
+                        help='人类可读岗位名（写到 jobs.json metadata）')
+    parser.add_argument('--encrypt-job-id', default=None,
+                        help='BOSS encryptJobId（新设计：用于目录命名；推荐传；亦可走 env BOSS_HR_ENCRYPT_JOB_ID）')
     parser.add_argument('--run-id', default=None,
                         help='本次 run ID（默认自动生成；同一 run 内的所有产物落同一 runs/<run_id>/）')
     parser.add_argument('--force', action='store_true',
@@ -116,15 +118,24 @@ if __name__ == "__main__":
     print(f"Found: {name} ({eid})")
     raw = fetch_jd(eid)
 
-    job_name = args.job_name or _safe_name(name)
+    # 新设计：encrypt_job_id 是关键定位依据。从 CLI/env/反查 三级取，取不到直接报错
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
+    from output_manager import resolve_encrypt_job_id
+    encrypt_job_id = resolve_encrypt_job_id(args.encrypt_job_id)
+    # 如果 query 本身就是 encryptJobId，统一用它
+    if not encrypt_job_id:
+        encrypt_job_id = eid
+    if not encrypt_job_id:
+        raise ValueError("缺少 encrypt_job_id，无法确定工作区目录。\n  传 --encrypt-job-id，或设置 env BOSS_HR_ENCRYPT_JOB_ID")
+
+    job_name = args.job_name or name  # 默认用人可读 jobName 作为 jobs.json name
 
     # 默认走 orchestrator，让 Step 2/3/4 自动绑定同一 run_id
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
     from run_orchestrator import RunOrchestrator
-    orch = RunOrchestrator(job_name)
+    orch = RunOrchestrator(job_name, encrypt_job_id=encrypt_job_id)
     run_id = orch.bind_or_create(args.run_id, job_id=eid, force=getattr(args, 'force', False))
 
-    output = JobOutputManager(job_name, run_id=run_id)
+    output = JobOutputManager(job_name, encrypt_job_id=encrypt_job_id, run_id=run_id)
     output.ensure_run_dir()
     print(f"run_id: {run_id}（orchestrator 绑定）")
 

@@ -53,6 +53,8 @@
 
 > **🚪 `boss-hr-auto` 是唯一入口**，其余 Skill 是其子步骤。使用时始终从 `boss-hr-auto` 开始。
 
+> **🆕 v2 接口（2026-07-29+）**：6 个 CLI 脚本全部接受 `--encrypt-job-id`（或 env `BOSS_HR_ENCRYPT_JOB_ID`），目录名从中文岗位名改为 BOSS 的 `encryptJobId`。详见 [📤 输出文件](#-输出文件新设计--2026-07-29) 章节。
+
 ---
 
 ## 🧩 技能一览与工作流
@@ -219,7 +221,7 @@ EOF
 |:----:|------|
 | ✅ 真实浏览器 TLS 指纹 | 通过 patchright 在 Edge 内 fetch，服务器无法区分真人 |
 | ✅ 滚动延迟 3-6 秒随机 | 模拟真人浏览 |
-| ✅ 简历获取 5-15 秒随机 | 模拟真人阅读 |
+| ✅ 简历获取 60-120 秒随机（每 5 人触发一次长延迟） | 模拟真人阅读 + 风控 |
 | ✅ 建议工作时间运行 | 9:00-18:00 |
 | ✅ 单次建议不超过 50 人 | 超过则分批次 |
 
@@ -249,9 +251,8 @@ boss-hr-agent-toolkit/
 ├── FILE_MANAGEMENT.md                 # 文件管理规范
 ├── .gitignore
 │
-├── boss-hr-auto/                      # 🚪 全流程编排（唯一入口）
-│   ├── SKILL.md
-│   └── scripts/auto_pipeline.py        # 一把梭串 Step 1→5
+├── boss-hr-auto/                      # 🚪 全流程编排（唯一入口，纯文档）
+│   └── SKILL.md                        # 智能体按此文档顺序调用各子 Skill 脚本
 │
 ├── boss-agent-cli/                    # 📖 CLI 命令参考
 │   ├── SKILL.md
@@ -300,25 +301,51 @@ boss-hr-agent-toolkit/
 
 ---
 
-## 📤 输出文件
+## 📤 输出文件（新设计 · 2026-07-29+）
 
-所有输出自动保存到：
+> **目录名 = BOSS 的 `encryptJobId`**（不再是中文岗位名）。`job_name`（中文岗位名）只作为 `jobs.json` 里的可读元数据。这样做的核心原因：避免中文路径在 URL/文件 IO 里的编码翻车；6 个 CLI 脚本统一通过 `--encrypt-job-id`（或 env `BOSS_HR_ENCRYPT_JOB_ID`）透传给 `JobOutputManager`，**路径选择集中在 shared 层**。
 
 ```
-~/Desktop/boss-hr-output/
-└── <岗位名>/
-    ├── <岗位名>_统一方案.html          # 最终 HTML 报告
-    └── process/                       # 过程文件（留痕查阅）
-        ├── job_detail.json            # JD 数据
-        ├── recommend_geek_ids.json    # 累计候选人 ID
-        ├── test_resumes.json          # 累计所有简历
-        └── screening_results.json     # 评分结果
+~/Desktop/boss-hr-output/                         # 工作区根（可用 BOSS_HR_OUTPUT_DIR 改）
+├── jobs.json                                      # JobRegistry：encryptJobId → {name, company}
+└── <encryptJobId>/                                # 例如 9a7759badfd95d350nFz3d-_F1NX
+    ├── state/                                     # 跨 run 保留（不覆盖）
+    │   ├── candidate_pool.json
+    │   ├── download_state.json
+    │   ├── resumes_master.json                    # 累计简历（含 _meta）
+    │   ├── collection_state.json
+    │   ├── scored_state.json
+    │   ├── geek_positions.json
+    │   └── current_run.json
+    └── runs/                                       # 每次筛选任务一个 run_id 子目录
+        └── <run_id>/
+            ├── <run_id>_screening_report.html     # 最终 HTML 报告
+            └── process/                            # 过程文件（留痕查阅）
+                ├── job_detail.json                 # Step 1 输出
+                ├── batch_1_ids.json / recommend_geek_ids.json
+                ├── new_resumes.json                # Step 2 输出
+                ├── _llm_scores.json                # Step 3：LLM agent 评分
+                ├── screening_results.json          # Step 3 输出
+                ├── failed_resumes.json
+                └── greet_log.json                  # Step 5 输出
 ```
+
+### 🚨 严格模式（缺 `--encrypt-job-id` 直接报错）
+
+6 个 CLI 脚本（`boss_jd.py` / `recommend_list.py` / `recommend_download.py` / `score_resumes.py` / `generate_html_report.py` / `auto_greet.py`）**必须传 `--encrypt-job-id`**（或 env `BOSS_HR_ENCRYPT_JOB_ID`）。缺则：
+
+```
+ValueError: 缺少 encrypt_job_id。
+  传 --encrypt-job-id，或设置 env BOSS_HR_ENCRYPT_JOB_ID
+```
+
+不会静默回退到中文目录名——避免你以为跑了新路径、实际又落到中文路径的事故。
 
 > [!TIP]
-> - 禁止在桌面散落文件；HTML 报告放岗位文件夹根目录，中间数据放 `process/`
+> - 禁止在桌面散落文件；HTML 报告放 run 目录（文件名含 run_id，永不覆盖历史），中间数据放 `process/`
 > - 临时 Python 脚本任务结束后删除
 > - 复用 skill 内已有的 Python 脚本，禁止重复造轮子
+> - 同一 job 的 5 步脚本必须传**同一个** `--encrypt-job-id` 和 `--run-id`
 >
 > 详见 [FILE_MANAGEMENT.md](FILE_MANAGEMENT.md)。
 
@@ -330,6 +357,8 @@ boss-hr-agent-toolkit/
 |------|------|--------|
 | `BOSS_BIN` | boss CLI 路径 | `boss` |
 | `CDP_URL` | 浏览器 CDP 调试地址 | `http://localhost:9222` |
+| `BOSS_HR_OUTPUT_DIR` | 工作区根 | `~/Desktop/boss-hr-output` |
+| `BOSS_HR_ENCRYPT_JOB_ID` | BOSS 加密岗位 ID（=工作区子目录名） | 缺则 `ValueError` |
 | `PYTHONHOME` | **必须清空** | `""` |
 | `PYTHONIOENCODING` | 避免 CLI 编码问题 | `utf-8` |
 

@@ -30,21 +30,28 @@ import argparse
 
 
 def get_recommend_candidates(job_name='车架工程师', max_candidates=None,
-                             batch_size=None, batch_number=None):
+                             batch_size=None, batch_number=None,
+                             run_id=None, encrypt_job_id=None):
     """
     获取推荐牛人候选人列表
 
     Args:
-        job_name:        岗位名称（用于确定输出路径）
+        job_name:        岗位名称（jobs.json metadata）
         max_candidates:  最大获取数量（None 为全部，与分批互斥）
         batch_size:      每批收集人数（分批模式）
         batch_number:    第几批，从 1 开始（分批模式）
+        run_id:          显式 run_id（一般不传，自动跟走 current_run.json）
+        encrypt_job_id:  BOSS encryptJobId（推荐；env BOSS_HR_ENCRYPT_JOB_ID 可兑底）
     """
     # 2026-07-28 修复：跟走 RunOrchestrator，让 list 落到跟前面 step 同一 run_id，
     #   避免每次 skill 默认开新 run 目录。
-    orch = RunOrchestrator(job_name)
-    run_id = orch.bind_or_create()
-    output = JobOutputManager(job_name, run_id=run_id)
+    from output_manager import resolve_encrypt_job_id
+    encrypt_job_id = resolve_encrypt_job_id(encrypt_job_id)
+    if not encrypt_job_id:
+        raise ValueError("缺少 encrypt_job_id。\n  传 --encrypt-job-id，或设置 env BOSS_HR_ENCRYPT_JOB_ID")
+    orch = RunOrchestrator(job_name, encrypt_job_id=encrypt_job_id)
+    run_id = orch.bind_or_create(run_id)
+    output = JobOutputManager(job_name, encrypt_job_id=encrypt_job_id, run_id=run_id)
 
     # 分批状态文件
     state_path = output.get_process_path('batch_state.json')
@@ -195,16 +202,25 @@ def get_recommend_candidates(job_name='车架工程师', max_candidates=None,
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='获取推荐牛人候选人列表（支持分批）')
-    parser.add_argument('--job-name', default='车架工程师', help='岗位名称')
+    parser.add_argument('--job-name', default='车架工程师', help='岗位名称（jobs.json metadata）')
+    parser.add_argument('--encrypt-job-id', default=None,
+                        help='BOSS encryptJobId（推荐；新设计目录名依此定位；亦可走 env BOSS_HR_ENCRYPT_JOB_ID）')
     parser.add_argument('--max', type=int, default=None, help='最大获取数量（普通模式）')
     parser.add_argument('--batch-size', type=int, default=None, help='每批收集人数（分批模式）')
     parser.add_argument('--batch', type=int, default=None, help='第几批，从1开始（分批模式）')
+    parser.add_argument('--run-id', default=None,
+                        help='显式指定 run_id（一般不传，自动跟走 current_run.json）')
 
     args = parser.parse_args()
 
     if args.batch_size and args.batch:
         get_recommend_candidates(args.job_name,
                                  batch_size=args.batch_size,
-                                 batch_number=args.batch)
+                                 batch_number=args.batch,
+                                 run_id=args.run_id,
+                                 encrypt_job_id=args.encrypt_job_id)
     else:
-        get_recommend_candidates(args.job_name, max_candidates=args.max)
+        get_recommend_candidates(args.job_name,
+                                 max_candidates=args.max,
+                                 run_id=args.run_id,
+                                 encrypt_job_id=args.encrypt_job_id)

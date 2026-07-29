@@ -10,6 +10,33 @@ description: |
 
 # Resume Screener
 
+## 🔁 跨 run 评分去重（脚本自动执行）
+
+`score_resumes.py` 自带去重，**智能体不需要手工过滤已评分候选人**：
+
+- **入口**：按 `job_id:geek_id` 查 `state/scored_state.json`，历史评过的自动跳过
+- **出口**：本轮评分结果自动回写 `scored_state.json`
+- **逃生门**：`--rescore` 强制重评（换 JD、改评分口径时用）
+
+```bash
+# 正常评分（自动跳过历史已评人员）
+python score_resumes.py --input _llm_scores.json --output screening_results.json \
+  --job-name "<岗位名>" --run-id "$RUN_ID"
+# → ⏭ 跳过 12 位历史已评分候选人：张三、李四...
+
+# 换了 JD 要全部重评
+python score_resumes.py ... --rescore
+```
+
+> 去重按 **geek_id** 而非姓名。BOSS 上「杨先生」「吕女士」这类匿名昵称会重名，
+> 脚本对同一姓名维护 ID 列表：**只要还有任一同名候选人未评分就放行**
+> （宁可偶尔重复评分，也不把没评过的人误杀）。
+>
+> 姓名 → geek_id 的映射从 `state/resumes_master.json` 反查，所以
+> **`_llm_scores.json` 里的 `name` 必须与简历原始姓名一致**，改写姓名会导致匹配失败（脚本会告警）。
+
+---
+
 ## 评分架构
 
 - **LLM 评 4 维度最终分**：`exp / skill / proj / major` 全部由 LLM 真实分析完整简历后给出 0–100 的最终分（已综合考虑年限、对口度、实操深度、复杂度等）
@@ -59,9 +86,12 @@ python score_resumes.py \
   --input <llm_scores.json> \
   --output <screening_results.json> \
   --job-name "<岗位名>" \
+  --encrypt-job-id "<BOSS 的 encryptJobId>" \
   --job-info <JD JSON 字符串> \
   --run-id <run_id>
 ```
+
+> 🚨 **新接口必传 `--encrypt-job-id`**：工作区目录名 = `encryptJobId`，与 Step 1/2/4 保持一致。也可以设 env `BOSS_HR_ENCRYPT_JOB_ID` 作为 fallback。缺则直接 `ValueError` 退出（严格模式，不静默回退）。
 
 ### `scripts/school_tier.py`
 
@@ -80,55 +110,72 @@ info = lookup("江南大学")
 ## 完整工作流
 
 ```bash
+# 公共参数（5 步全流程同一个 encryptJobId）
+export ENCRYPT_ID="9a7759badfd95d350nFz3d-_F1NX"
+export JOB_NAME="线控底盘制动、转向工程师"
+export RUN_ID="2026-07-29_150915"
+
 # 假设已有 runs/<run_id>/process/new_resumes.json（来自 boss-recommend-downloader）
 
 # 1. LLM agent 读 new_resumes.json + job_detail.json
 # 2. LLM agent 调 LLM API 逐份简历评 4 维度（exp / skill / proj / major）
 # 3. 写 _llm_scores.json 到 runs/<run_id>/process/_llm_scores.json
-#    - 必须填 school_name（纯校名，不带专业/学历后缀）让 school_tier 能查
+#    - 推荐填 `school_name`（纯校名）、`geek_id` 和 `job_id`：
+#        * `school_name` 让 school_tier 准确查档；不填也能跑，脚本兜底从 `school` 拆
+#        * `geek_id` 让评分去重按 ID 而非姓名（避免"杨先生"重名误杀）
+#        * `job_id` 是 BOSS 的 encryptJobId（从 new_resumes[i]._meta.encrypt_job_id 取），
+#          让脚本在 resumes_master.json 多 prefix 时精准定位；不填会走暴力扫描兜底
+#    - 不填也能跑（脚本兼容），但去重和校准可能不精确
 # 4. 跑脚本收尾
 python score_resumes.py \
   --input runs/<run_id>/process/_llm_scores.json \
   --output runs/<run_id>/process/screening_results.json \
-  --job-name "<岗位名>" \
+  --job-name "$JOB_NAME" \
+  --encrypt-job-id "$ENCRYPT_ID" \
   --run-id <run_id>
 
 # Step 4: 生成 HTML 报告
-python generate_html_report.py \
-  --input runs/<run_id>/process/screening_results.json \
-  --output runs/<run_id>/<run_id>_<岗位名>_简历筛选报告.html
+python html-report/scripts/generate_html_report.py \
+  --job-name "$JOB_NAME" \
+  --encrypt-job-id "$ENCRYPT_ID" \
+  --run-id <run_id>
 ```
 
-## 工作区路径约定
+## 工作区路径约定（新设计 · 2026-07-29+）
 
-**所有数据统一存放在 `~/Desktop/boss-hr-output/<job_name>/` 下**，由 `shared/output_manager.JobOutputManager` 管理。
+**所有数据统一存放在 `~/Desktop/boss-hr-output/<encryptJobId>/` 下**，**目录名直接用 BOSS 的 `encryptJobId`**（不再用中文岗位名）。`job_name` 仅作为 `jobs.json` 里的可读元数据。
 
 ```
-~/Desktop/boss-hr-output/<岗位名>/
-├── state/                                  # 跨 run 保留（不覆盖）
-│   ├── candidate_pool.json                 # 累计候选人
-│   ├── download_state.json                 # 下载状态
-│   ├── resumes_master.json                 # 累计成功简历（含 _meta）
-│   └── collection_state.json
-└── runs/
-    └── 2026-07-27_083015/                  # 一次筛选任务
-        ├── 2026-07-27_083015_<岗位名>_简历筛选报告.html
-        └── process/
-            ├── job_detail.json              ← Step 1: boss_jd.py 输出
-            ├── recommend_geek_ids.json      ← Step 2: recommend_list.py 输出（本次新增）
-            ├── new_resumes.json             ← Step 2: recommend_download.py 输出（本次新增）
-            ├── _llm_scores.json             ← Step 3: LLM agent 评分（合并后）
-            ├── screening_results.json       ← Step 3: score_resumes.py 输出
-            ├── failed_resumes.json          ← Step 2: 失败列表
-            ├── run_summary.json             ← run_all.py 自动生成
-            └── run_log.txt                  ← run_all.py 自动生成
+~/Desktop/boss-hr-output/
+├── jobs.json                               # JobRegistry：encryptJobId → {name, company}
+└── <encryptJobId>/                         # 目录名 = BOSS 的 encryptJobId
+    ├── state/                              # 跨 run 保留（不覆盖）
+    │   ├── candidate_pool.json
+    │   ├── download_state.json
+    │   ├── resumes_master.json             # 累计成功简历（含 _meta）
+    │   ├── collection_state.json
+    │   ├── scored_state.json
+    │   └── current_run.json
+    └── runs/
+        └── <run_id>/                       # 一次筛选任务
+            ├── <run_id>_screening_report.html
+            └── process/
+                ├── job_detail.json              ← Step 1: boss_jd.py 输出
+                ├── batch_1_ids.json / recommend_geek_ids.json  ← Step 2: list 输出
+                ├── new_resumes.json             ← Step 2: recommend_download.py 输出
+                ├── _llm_scores.json             ← Step 3: LLM agent 评分
+                ├── screening_results.json       ← Step 3: score_resumes.py 输出
+                ├── failed_resumes.json
+                └── greet_log.json               ← Step 5: auto_greet.py 输出
 ```
 
-> 上游 `boss-job-detail` / `boss-recommend-downloader` 已自动写入此目录，下游脚本（`score_resumes.py` / `generate_html_report.py`）通过 `--input/--output` 读取此目录。
+> 上游 `boss-job-detail` / `boss-recommend-downloader` 已自动写入此目录，下游脚本（`score_resumes.py` / `generate_html_report.py` / `auto_greet.py`）通过 `--input/--output` 读取此目录。
 >
 > `JobOutputManager` 提供的标准路径属性：`jd_path` / `recommend_geek_ids_path` / `new_resumes_path` / `screening_results_path` / `report_path` / `run_summary_path`。
 >
-> **同一 run 必须传同一个 `--run-id`** 给所有脚本（list / download / score / HTML），产物才落在同一个 `runs/<run_id>/`。
+> **同一 run 必须传同一个 `--run-id`** 给所有脚本（list / download / score / HTML / greet），产物才落在同一个 `runs/<run_id>/`。
+>
+> **同一 job 必须传同一个 `--encrypt-job-id`** 给所有脚本，工作区目录才一致。
 
 ---
 

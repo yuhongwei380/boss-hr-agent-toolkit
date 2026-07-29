@@ -76,12 +76,23 @@ class JobResumeStore:
     SCHEMA_VERSION = 1
 
     def __init__(self, job_name: str, encrypt_job_id: str = None):
+        # 2026-07-29：CLI 推荐透传 encrypt_job_id，新设计目录名才准
+        #            兼容模式：缺时从 jobs.json/legacy 反查（保留旧行为）
+        from output_manager import resolve_encrypt_job_id
         self.job_name = job_name
-        self.encrypt_job_id = encrypt_job_id or _load_legacy_job_id(job_name)
+        self.encrypt_job_id = (
+            encrypt_job_id
+            or resolve_encrypt_job_id()  # env 兜底
+            or _load_legacy_job_id(job_name)  # 兼容旧逻辑
+        )
 
         # state/ 目录（纯读操作 → lazy=True 不触发 runs/<run_id> 创建）
         from output_manager import JobOutputManager
-        out = JobOutputManager(job_name, lazy=True)
+        out = JobOutputManager(
+            job_name,
+            encrypt_job_id=self.encrypt_job_id,
+            lazy=True,
+        )
         self.state_dir = out.state_dir
         # state 目录读多于写，但仍要兜底存在
         os.makedirs(self.state_dir, exist_ok=True)
@@ -90,6 +101,7 @@ class JobResumeStore:
         self.download_state_path = os.path.join(self.state_dir, "download_state.json")
         self.resumes_master_path = os.path.join(self.state_dir, "resumes_master.json")
         self.collection_state_path = os.path.join(self.state_dir, "collection_state.json")
+        self.scored_state_path = os.path.join(self.state_dir, "scored_state.json")
 
     # ---------- 候选人池 ----------
     def add_candidate(self, g: dict) -> bool:
@@ -226,6 +238,58 @@ class JobResumeStore:
             if v.get("status") == "success":
                 out.append({"candidate_key": k, **v})
         return out
+
+    # ---------- 评分状态（跨 run 去重，避免同一候选人被反复评分） ----------
+    def _load_scored(self) -> dict:
+        state = _load_json(self.scored_state_path, {
+            "schema_version": self.SCHEMA_VERSION,
+            "job_id": self.encrypt_job_id,
+            "items": {},
+        })
+        if not isinstance(state, dict) or "items" not in state:
+            state = {"schema_version": self.SCHEMA_VERSION,
+                     "job_id": self.encrypt_job_id, "items": {}}
+        return state
+
+    def _save_scored(self, state: dict) -> None:
+        if self.encrypt_job_id:
+            state["job_id"] = self.encrypt_job_id
+        _atomic_write_json(self.scored_state_path, state)
+
+    def is_scored(self, job_id: str, geek_id: str) -> bool:
+        """该候选人是否已在历史某个 run 评过分"""
+        key = candidate_key(job_id, geek_id)
+        return key in self._load_scored()["items"]
+
+    def get_score_record(self, job_id: str, geek_id: str) -> dict:
+        """取历史评分记录（无则 None）"""
+        key = candidate_key(job_id, geek_id)
+        return self._load_scored()["items"].get(key)
+
+    def mark_scored(self, job_id: str, geek_id: str, name: str = "",
+                    total: float = None, tier: str = "", run_id: str = None) -> None:
+        """记录一次评分结果。重复评分时保留首次 run_id，覆盖最新分数。"""
+        key = candidate_key(job_id, geek_id)
+        state = self._load_scored()
+        prev = state["items"].get(key, {})
+        state["items"][key] = {
+            "name": name or prev.get("name", ""),
+            "total": total,
+            "tier": tier,
+            "scored_at": now_ts(),
+            "first_run_id": prev.get("first_run_id") or run_id,
+            "last_run_id": run_id,
+            "times": prev.get("times", 0) + 1,
+        }
+        self._save_scored(state)
+
+    def scored_names(self) -> set:
+        """历史已评分过的姓名集合。
+
+        注意：仅供人工排查/兜底展示。判断"是否已评分"务必用 is_scored（按 ID），
+        因为 BOSS 的"杨先生""吕女士"等匿名昵称会重名。
+        """
+        return {v.get("name", "") for v in self._load_scored()["items"].values() if v.get("name")}
 
     # ---------- 简历累计 ----------
     def save_resume(self, resume: dict, job_id: str, geek_id: str, run_id: str) -> bool:

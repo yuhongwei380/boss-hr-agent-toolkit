@@ -11,6 +11,7 @@
     │   ├── candidate_pool.json
     │   ├── download_state.json
     │   ├── resumes_master.json
+    │   ├── scored_state.json                  # 已评分记录（跨 run 评分去重）
     │   ├── geek_positions.json
     │   └── current_run.json
     └── runs/
@@ -166,11 +167,42 @@ else:
 
 ## 📖 示例：完整工作流
 
+> **没有一把梭脚本。** `boss-hr-auto` 是纯文档 Skill，由智能体按 SKILL.md 的 Step 顺序
+> 依次调用各子 Skill 的脚本。**每一步都必须显式传同一个 `--run-id`**，否则产物会散落到
+> 不同 run 目录（脚本不传时会去读 `state/current_run.json`，可能落到上一次的旧 run）。
+
 ```bash
-# 1. 一把梭串完 Step 1→5（由 boss-hr-auto/scripts/auto_pipeline.py 编排）
-python -X utf8 boss-hr-auto/scripts/auto_pipeline.py \
-  --encrypt-job-id "<encryptJobId>" \
-  --job-name "车架工程师" --max 10
+# 0. 先开 run_id（所有 Step 共用这一个）
+RUN_ID=$(python -X utf8 -c "
+import sys; sys.path.insert(0,'shared')
+from run_orchestrator import RunOrchestrator
+print(RunOrchestrator('车架工程师').bind_or_create())
+")
+
+# 1. Step 1 提取 JD
+python -X utf8 boss-job-detail/scripts/boss_jd.py "<encryptJobId>" --run-id "$RUN_ID"
+
+# 2. Step 2 候选人列表 + 下载简历
+python -X utf8 boss-recommend-downloader/scripts/recommend_list.py \
+  --job-name "车架工程师" --run-id "$RUN_ID"
+python -X utf8 boss-recommend-downloader/scripts/recommend_download.py \
+  --job-name "车架工程师" --run-id "$RUN_ID" --max 25
+
+# 3. Step 3 LLM 评 4 维度 → 写 _llm_scores.json → 脚本收尾
+#    （_llm_scores.json 由智能体直接写入 process/，不要拆成 _llm_1/_split_N 等临时文件）
+python -X utf8 resume-screener/scripts/score_resumes.py \
+  --input  "runs/$RUN_ID/process/_llm_scores.json" \
+  --output "runs/$RUN_ID/process/screening_results.json" \
+  --job-name "车架工程师" --run-id "$RUN_ID"
+
+# 4. Step 4 生成报告
+python -X utf8 html-report/scripts/generate_html_report.py \
+  --input  "runs/$RUN_ID/process/screening_results.json" \
+  --output "runs/$RUN_ID/${RUN_ID}_车架工程师_简历筛选报告.html"
+
+# 5. Step 5 打招呼
+python -X utf8 boss-hr-greet/scripts/auto_greet.py \
+  --job-name "车架工程师" --run-id "$RUN_ID"
 
 # 中间产物
 # - process/job_detail.json         Step 1 boss_jd.py

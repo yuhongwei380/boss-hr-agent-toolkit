@@ -32,30 +32,86 @@ from typing import Optional
 # 输出根目录（可通过 BOSS_HR_OUTPUT_DIR 环境变量覆盖，方便其他机器 / WSL / Linux 部署）
 OUTPUT_ROOT = os.environ.get('BOSS_HR_OUTPUT_DIR') or os.path.expanduser('~/Desktop/boss-hr-output')
 
+# 环境变量名（CLI 透传 + 兜底）
+ENV_ENCRYPT_JOB_ID = 'BOSS_HR_ENCRYPT_JOB_ID'
+
 
 def _make_run_id() -> str:
     """生成 run_id：YYYY-MM-DD_HHMMSS"""
     return datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
 
-class JobOutputManager:
-    """岗位输出管理器 - 所有 skill 共用"""
+def resolve_encrypt_job_id(cli_value: Optional[str] = None, *, allow_fallback: bool = True) -> Optional[str]:
+    """解析 encrypt_job_id：CLI 透传 > 环境变量 > None。
 
-    def __init__(self, job_name, run_id=None, lazy=False):
+    Args:
+        cli_value:        CLI --encrypt-job-id 的值（None=未传）
+        allow_fallback:   True=允许走旧逻辑（用 job_name 当目录名）；
+                          False=取不到就 raise（强制新设计）
+
+    优先级：
+        1) CLI 显式传 (cli_value)
+        2) 环境变量 BOSS_HR_ENCRYPT_JOB_ID
+        3) jobs.json by_job_name 反查（仅 allow_fallback=True）
+
+    Raises:
+        ValueError:  allow_fallback=False 且取不到时
+    """
+    if cli_value:
+        return cli_value
+    env_v = os.environ.get(ENV_ENCRYPT_JOB_ID)
+    if env_v:
+        return env_v
+    if allow_fallback:
+        return None
+    raise ValueError(
+        f"缺少 encrypt_job_id。\n"
+        f"  新设计要求：目录名 = encryptJobId（不可变 ID，与候选人 geek_id 同源）。\n"
+        f"  解决：在 CLI 传 --encrypt-job-id <ENCRYPT_JOB_ID>，"
+        f"或设置环境变量 {ENV_ENCRYPT_JOB_ID}。\n"
+        f"  不允许静默回退到旧逻辑（job_name 当目录名）。"
+    )
+
+
+class JobOutputManager:
+    """岗位输出管理器 - 所有 skill 共用
+
+    路径定位策略（2026-07-29）：
+    - **优先用 `encrypt_job_id` 作目录名**（不可变 ID，与候选人 geek_id 同源）
+    - `job_name` 仅作 metadata（写入 jobs.json，供人类查看）
+    - 旧调用（只传 job_name）仍可用 —— 自动从 jobs.json 反查或生成 placeholder
+    """
+
+    def __init__(self, job_name=None, run_id=None, lazy=False, encrypt_job_id=None):
         """
         Args:
-            job_name: 岗位名称（如"线控底盘制动、转向工程师"）
-            run_id:   本次 run 的 ID。省略时自动跟走 state/current_run.json
-                      里的活跃 run（未 finished 才沿用；否则新建）。
-                      这样 5 步流程里所有 skill 默认落到同一 runs/<run_id>/，
-                      单脚本入口即合规、不需要每个脚本再 orch.bind_or_create()。
-            lazy:     默认 False（创建 state/ 和 runs/）。
-                      True 时只声明路径，**不创建** runs/<run_id>/ 子目录 —
-                      避免"只读探测 / Ctrl+C / 启动失败"留下空 run 目录。
-                      需要落盘时调 ensure_run_dir()。
+            job_name:        岗位名称（人类可读）。可空 —— 只用 encrypt_job_id 也能跑
+            encrypt_job_id:  BOSS 的 encryptJobId（推荐）。优先用于目录命名
+            run_id:          本次 run 的 ID。省略时跟走 state/current_run.json
+            lazy:            默认 False（创建 state/ 和 runs/）
         """
+        from job_registry import JobRegistry, resolve_job_dir
+        self.encrypt_job_id = encrypt_job_id
+
+        # 路径定位：encrypt_job_id 优先
+        if encrypt_job_id:
+            self.job_dir = resolve_job_dir(encrypt_job_id, name=job_name)
+            # 注册 metadata（job_name 作人类可读名字）
+            if job_name:
+                JobRegistry().register(encrypt_job_id, name=job_name)
+            else:
+                meta = JobRegistry().get(encrypt_job_id)
+                job_name = (meta or {}).get("name") or encrypt_job_id
+        else:
+            # 旧调用：用 job_name 作目录名（兼容模式 —— 不强求迁移）
+            job_name = job_name or "unknown_job"
+            self.job_dir = os.path.join(OUTPUT_ROOT, job_name)
+            # 尝试反查 encrypt_job_id
+            meta = JobRegistry().by_name(job_name)
+            if meta:
+                self.encrypt_job_id = meta.get("encrypt_job_id")
+
         self.job_name = job_name
-        self.job_dir = os.path.join(OUTPUT_ROOT, job_name)
         self.state_dir = os.path.join(self.job_dir, 'state')
         self.runs_dir = os.path.join(self.job_dir, 'runs')
 
@@ -126,9 +182,14 @@ class JobOutputManager:
     # ============ 最终报告路径（HTML 在 run 目录下，文件名带 run_id）============
     @property
     def report_path(self):
-        """HTML 报告（同 run 内固定名，跨 run 不覆盖）"""
-        safe = self.job_name.replace('/', '-').replace('\\', '-')
-        return os.path.join(self.run_dir, f'{self.run_id}_{safe}_简历筛选报告.html')
+        """HTML 报告（同 run 内固定名，跨 run 不覆盖）
+
+        文件名用英文 ID 风格 —— 不可变 ID 已经在目录结构里
+        （encrypt_job_id → job_dir，run_id → run_dir），文件名再加
+        中文会让"目录/文件名都走不可变 ID"的统一原则破洞。
+        同 run 重新生成报告会被覆盖，跨 run 由 run_id 区分。
+        """
+        return os.path.join(self.run_dir, f'{self.run_id}_screening_report.html')
 
     # ============ 过程文件路径（全部在 runs/<run_id>/process/） ============
     @property
