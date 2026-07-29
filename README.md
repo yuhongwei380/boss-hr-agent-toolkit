@@ -32,11 +32,11 @@
 你有一个岗位，剩下的交给 AI：
 
 ```
-   岗位          →   AI 自动提取 JD   →   自动下载候选人简历   →   自动评分排名   →   可视化报告 + 沟通建议
-(一句话需求)        (boss-job-detail)      (recommend / 沟通列表)     (resume-screener)     (html-report)
+   岗位          →   AI 自动提取 JD   →   自动下载候选人简历   →   自动评分排名   →   自动打招呼 + 可视化报告
+(一句话需求)        (boss-job-detail)      (boss-recommend-downloader)    (resume-screener)     (boss-hr-greet + html-report)
 ```
 
-**一句话概括：** AI 帮你在几十份简历中，几分钟内筛出最匹配的那几个，并告诉你该和每个人聊什么。
+**一句话概括：** AI 帮你在几十份简历中，几分钟内筛出最匹配的那几个，自动给高分候选人打招呼，并告诉你该和每个人聊什么。
 
 ---
 
@@ -45,8 +45,9 @@
 | 能力 | 说明 |
 |:----:|------|
 | 🔍 **JD 提取** | 一键抓取岗位详情、任职要求与核心技能点 |
-| 📥 **简历获取** | 支持「沟通列表」与「推荐牛人」两条路径，真实浏览器指纹，低风控 |
+| 📥 **简历获取** | 从推荐牛人页面获取完整简历，真实浏览器指纹，低风控 |
 | 🧮 **智能评分** | 5 维度加权评分 + 学历分档校准，硬门槛过滤 |
+| 📬 **自动打招呼** | 给 ≥70 分的推荐 tier 候选人自动点 BOSS 打招呼按钮 |
 | 📊 **可视化报告** | 排名表 + 五维雷达图 + 个性化沟通建议，HTML 一键生成 |
 | 🧪 **可测试** | 核心算法由 `tests/` 单元测试用例覆盖 |
 
@@ -58,25 +59,23 @@
 
 | # | Skill | 角色 | 作用 |
 |:-:|------|:----:|------|
-| 0 | **boss-hr-auto** | 🚪 入口 | 编排全流程工作流（唯一入口） |
+| 0 | **boss-hr-auto** | 🚪 入口 | 编排全流程工作流（唯一入口，5 步串到底） |
 | 1 | boss-agent-cli | 📖 参考 | BOSS CLI 命令手册（被其他 Skill 引用） |
 | 2 | boss-job-detail | Step 1 | 提取岗位 JD |
-| 3A | boss-resume-downloader | Step 2A | 从沟通列表下载候选人简历 |
-| 3B | **boss-recommend-downloader** | Step 2B | 从推荐牛人页面获取完整简历 |
+| 3 | **boss-recommend-downloader** | Step 2 | 从推荐牛人页面获取完整简历（含 run_all 一把梭） |
 | 4 | resume-screener | Step 3 | 硬门槛过滤 + 加权评分 + 学历分档 |
 | 5 | html-report | Step 4 | 生成可视化 HTML 报告 + 沟通建议 |
+| 5+ | **boss-hr-greet** | Step 5 | 给高分候选人自动打招呼（主流程自动触发） |
 
 ### 工作流示意图
 
 ```mermaid
 flowchart LR
     A[岗位需求] --> B[boss-job-detail<br/>提取 JD]
-    B --> C{简历来源}
-    C -->|沟通列表| D1[boss-resume-downloader]
-    C -->|推荐牛人| D2[boss-recommend-downloader]
-    D1 --> E[resume-screener<br/>评分排名]
-    D2 --> E
-    E --> F[html-report<br/>可视化报告 + 沟通建议]
+    B --> C[boss-recommend-downloader<br/>推荐牛人列表 + 在线简历]
+    C --> D[resume-screener<br/>LLM 评分 + 公式重算]
+    D --> E[html-report<br/>可视化报告]
+    D --> F[boss-hr-greet<br/>≥70 自动打招呼]
 ```
 
 ---
@@ -251,7 +250,8 @@ boss-hr-agent-toolkit/
 ├── .gitignore
 │
 ├── boss-hr-auto/                      # 🚪 全流程编排（唯一入口）
-│   └── SKILL.md
+│   ├── SKILL.md
+│   └── scripts/auto_pipeline.py        # 一把梭串 Step 1→5
 │
 ├── boss-agent-cli/                    # 📖 CLI 命令参考
 │   ├── SKILL.md
@@ -263,12 +263,7 @@ boss-hr-agent-toolkit/
 │   ├── SKILL.md
 │   └── scripts/boss_jd.py
 │
-├── boss-resume-downloader/            # Step 2A：沟通列表简历下载
-│   ├── SKILL.md
-│   ├── scripts/sync_boss_resumes.py
-│   └── references/
-│
-├── boss-recommend-downloader/         # Step 2B：推荐牛人简历下载
+├── boss-recommend-downloader/         # Step 2：推荐牛人列表 + 在线简历
 │   ├── SKILL.md
 │   └── scripts/
 │       ├── recommend_list.py          # 获取候选人列表
@@ -277,7 +272,6 @@ boss-hr-agent-toolkit/
 │
 ├── resume-screener/                   # Step 3：评分系统
 │   ├── SKILL.md
-│   ├── references/
 │   └── scripts/
 │       ├── score_resumes.py           # 加权评分 + 分档校准
 │       └── school_tier.py             # 学历分档表
@@ -287,10 +281,16 @@ boss-hr-agent-toolkit/
 │   ├── scripts/generate_html_report.py
 │   └── templates/report.html
 │
+├── boss-hr-greet/                     # Step 5：自动打招呼（主流程自动触发）
+│   ├── SKILL.md
+│   └── scripts/auto_greet.py          # 位置表 + 倒序招呼
+│
 ├── shared/                            # 共享工具
 │   ├── output_manager.py              # 统一文件路径管理
-│   ├── fix_encoding.py                # 编码修复
-│   └── human_interaction.py           # 人工交互兜底
+│   ├── run_orchestrator.py            # 跨 Step run_id 编排
+│   ├── job_resume_store.py            # 候选人键 + 状态读写 + 简历合并
+│   ├── human_interaction.py           # 拟人鼠标移动
+│   └── fix_encoding.py                # 编码修复
 │
 └── tests/                             # 单元测试
     ├── conftest.py

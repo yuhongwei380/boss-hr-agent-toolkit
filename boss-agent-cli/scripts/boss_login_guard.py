@@ -14,8 +14,8 @@ BOSS 直聘登录守卫（login guard）— 登录状态机 + 强信号验收。
                    用于浏览器里有 stoken 但 session.enc 缺 stoken 的场景。
 
 退出码（所有子命令一致）：
-  0  ready            三条验收全部通过，可执行后续命令
-  2  degraded         半登录（缺 __zp_stoken__）或数据探针失败 → 运行 extract
+  0  ready            basic 三条验收通过 / resume 三条验收通过，stoken 缺失仅告警
+  2  degraded         CLI 视角凭证不完整（仅 CLI 命令依赖 stoken 时提示）
   3  not_logged_in    未登录 → 运行 open-login，用户扫码后再 extract
   4  cdp_unreachable  CDP 不可用 / CLI 异常 → 运行 open-login（会自动拉起浏览器）
 
@@ -26,8 +26,11 @@ BOSS 直聘登录守卫（login guard）— 登录状态机 + 强信号验收。
     2. `hr jobs list` 返回 ok=true
     （stoken 缺失不阻塞 basic 用途）
 
-  --purpose resume (Step 2 简历下载)：
-    1 + 2 + `auth_state == "full"`（wt2 与 __zp_stoken__ 均存在）
+  --purpose resume (Step 2 简历下载 — 历史概念)：
+    1 + 2（stoken 缺失只告警，不阻断）
+    说明：hr-auto 全流程走 patchright 直连 CDP 浏览器（用浏览器 wt2/zp_at/bst），
+    实际并不依赖 boss CLI 的 stoken。Stoken 补丁脚本仍保留为 `ensure-stoken` /
+    `patch_stoken.py`，需要用 boss CLI 命令（非本工具包）时手动触发。
 
 典型流程（由 agent 编排）：
   python boss_login_guard.py check                     # Step 0/1 用 basic
@@ -230,23 +233,33 @@ def _assess(purpose: str = "basic") -> dict:
         out["next_action"] = "运行 extract"
         return out
 
-    # resume 用途：必须 auth_state 为 "full" 或 "complete"（CLI 不同版本字段值不同）
+    # resume 用途：CLI 视角历史要求 auth_state=full + stoken 必须在场
+    # 2026-07-28 改动：hr-auto 全流程用 patchright 直连 CDP 浏览器，
+    #   API 调用走浏览器 wt2/zp_at/bst，不依赖 CLI 的 stoken。
+    #   把"stoken 必须"从硬阻断降级为告警，避免误中断 CDP 直连流程。
+    #   底层 patch_stoken.py / ensure-stoken 命令仍保留，用户可手动调用。
     if out["auth_state"] not in ("full", "complete"):
+        # CLI 视角证书不完整 → verdict 仍按 CLI 视角判 degraded，
+        # 但用户走 hr-auto 时由编排脚本根据 purpose 解读 warning。
         out["verdict"] = "degraded"
-        out["next_action"] = (
-            "缺 __zp_stoken__。优先运行 ensure-stoken（无扫码修复）；"
-            "若仍失败，运行 open-login-force 请用户重新扫码后再 extract"
+        out["warning"] = (
+            "CLI 视角缺 stoken（auth_state=partial），但 hr-auto 走 CDP"
+            "直连不受影响。需要 CLI 命令时手动跑 ensure-stoken。"
         )
-        return out
-
-    # stoken 必须在场（双保险：auth_state=complete 但 stoken 缺失也判 degraded）
-    if not out["stoken_present"]:
-        out["verdict"] = "degraded"
-        out["next_action"] = "auth_state 显示已登录但 stoken 缺失，请运行 patch_stoken.py 或 ensure-stoken"
+        out["next_action"] = (
+            "CLI 视角凭证不完整，但 CDP 直连路径不受影响。"
+            "若坚持用 boss CLI 命令（非本工具包）请先 open-login。"
+        )
         return out
 
     out["verdict"] = "ready"
     out["next_action"] = "none"
+    if not out["stoken_present"]:
+        out["warning"] = (
+            "resume 用途（CLI 视角）缺 __zp_stoken__，但 hr-auto 流程走 CDP 浏览器"
+            "直连，不依赖此 cookie。继续运行即可。需要 CLI 命令时请手动运行"
+            " python boss_login_guard.py ensure-stoken"
+        )
     return out
 
 

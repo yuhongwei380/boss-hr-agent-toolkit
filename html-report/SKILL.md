@@ -63,18 +63,22 @@ Jinja2 风格模板占位符。**当前未使用**（脚本直接生成自包含
 ## 完整工作流
 
 ```
-boss-recommend-downloader 下载简历（输出到 ~/Desktop/boss-hr-output/<job_name>/process/）
+boss-recommend-downloader/scripts/run_all.py
+    list + download 串起来
+    → 输出 runs/<run_id>/process/{recommend_geek_ids,new_resumes,failed_resumes,run_summary}.json
     ↓
 resume-screener/scripts/score_resumes.py
     LLM 评 4 维度（exp/skill/proj/major）
     + school_tier 强制覆盖 edu
     + 公式重算 total
     + 判定 tier
-    → 输出 ~/Desktop/boss-hr-output/<job_name>/process/screening_results.json
+    → 输出 runs/<run_id>/process/screening_results.json
     ↓
 html-report/scripts/generate_html_report.py
     读取 screening_results.json
-    → 输出 ~/Desktop/boss-hr-output/<job_name>/<job_name>_统一方案.html（自包含）
+    → 输出 runs/<run_id>/<run_id>_<岗位名>_简历筛选报告.html（自包含）
+        ↑ 文件名含 run_id，永不覆盖历史报告
+        ↑ 头部展示 run-badge：🆔 run_id: <run_id> | 🕐 生成时间: ...
     ↓
 preview_url 在 IDE 内置浏览器打开
 ```
@@ -83,18 +87,39 @@ preview_url 在 IDE 内置浏览器打开
 
 **所有数据统一存放在 `~/Desktop/boss-hr-output/<job_name>/` 下**，由 `shared/output_manager.JobOutputManager` 管理。
 
+```
+~/Desktop/boss-hr-output/<岗位名>/
+├── state/                                  # 跨 run 保留
+│   ├── candidate_pool.json
+│   ├── download_state.json
+│   ├── resumes_master.json
+│   └── collection_state.json
+└── runs/
+    └── <run_id>/                           # 一次筛选任务
+        ├── <run_id>_<岗位名>_简历筛选报告.html  ← 本 skill 输出
+        └── process/
+            ├── job_detail.json
+            ├── recommend_geek_ids.json
+            ├── new_resumes.json
+            ├── failed_resumes.json
+            ├── screening_results.json     ← 本 skill 读取
+            ├── run_summary.json
+            └── run_log.txt
+```
+
 | Step | Skill | 脚本 | 输出文件 |
 |:----:|-------|------|----------|
-| 1 | `boss-job-detail` | `boss_jd.py` | `process/job_detail.json` |
-| 2a | `boss-recommend-downloader` | `recommend_list.py` | `process/recommend_geek_ids.json` |
-| 2b | `boss-recommend-downloader` | `recommend_download_v2.py` | `process/test_resumes.json` |
-| 3a | `resume-screener` | LLM agent | `process/_llm_scores.json` |
-| 3b | `resume-screener` | `score_resumes.py` | `process/screening_results.json` |
-| 4 | `html-report` | `generate_html_report.py` | `<job_name>_统一方案.html` |
+| 1 | `boss-job-detail` | `boss_jd.py` | `runs/<run_id>/process/job_detail.json` |
+| 2B | `boss-recommend-downloader` | `run_all.py` | `runs/<run_id>/process/{recommend_geek_ids,new_resumes,failed_resumes,run_summary}.json` |
+| 3 | `resume-screener` | LLM agent | `runs/<run_id>/process/_llm_scores.json` |
+| 3 | `resume-screener` | `score_resumes.py` | `runs/<run_id>/process/screening_results.json` |
+| 4 | `html-report` | `generate_html_report.py` | `runs/<run_id>/<run_id>_<岗位名>_简历筛选报告.html` |
 
 > 上游脚本（Step 1 / 2）已自动写入工作区，下游脚本（Step 3 / 4）通过 `--input/--output` 读取工作区。
 >
-> `JobOutputManager` 提供的标准路径属性：`jd_path` / `recommend_geek_ids_path` / `resumes_path` / `screening_results_path` / `report_path`。
+> `JobOutputManager` 提供的标准路径属性：`jd_path` / `recommend_geek_ids_path` / `new_resumes_path` / `screening_results_path` / `report_path` / `run_summary_path`。
+>
+> **同一 run 必须传同一个 `--run-id`** 给所有脚本，产物才落在同一个 `runs/<run_id>/`。
 
 ---
 
@@ -187,7 +212,7 @@ preview_url 在 IDE 内置浏览器打开
 
 - 旧 `generate_report.py` 行动建议用 if/else 模板拼接
 - 所有"待定"候选人的建议长得几乎一样（"3 年经验 + 软件能力 + 需确认设计能力"）
-- 旧 v1.0 SKILL.md 要求"必须包含背景+沟通方向"，但脚本实现是 if/else 模板生成 → **规范与实现矛盾**
+- 旧版字段写死会 KeyError 崩溃
 - 新方案让 LLM 在评 4 维度时**一起写好** highlights / concerns / advice
 - 脚本只负责渲染，不强制格式
 
@@ -209,17 +234,20 @@ preview_url 在 IDE 内置浏览器打开
 
 ```bash
 python generate_html_report.py \
-    --input "C:\Users\yuyu\Desktop\boss-hr-output\车架工程师\process\screening_results.json" \
-    --output "C:\Users\yuyu\Desktop\boss-hr-output\车架工程师\车架工程师_统一方案.html"
+    --input "runs/<run_id>/process/screening_results.json" \
+    --output "runs/<run_id>/<run_id>_<岗位名>_简历筛选报告.html"
 ```
 
 输出：
 
 ```
-HTML 报告已生成: C:\Users\yuyu\Desktop\boss-hr-output\车架工程师\车架工程师_统一方案.html
-文件大小: 121877 字节
-候选人: 32 人
+HTML 报告已生成: .../runs/2026-07-27_083015/2026-07-27_083015_线控底盘制动、转向工程师_简历筛选报告.html
+文件大小: 30430 字节
+候选人: 5 人
 ```
+
+> **关键变化**：输出文件名包含 `run_id`，**永不会覆盖历史报告**。报告头部展示 `run-badge`（🆔 run_id + 🕐 生成时间），方便区分同一岗位的多次筛选结果。
+> 若希望脚本自动从 `JobOutputManager.report_path` 拼路径，run_id 不传则使用默认值。
 
 ---
 

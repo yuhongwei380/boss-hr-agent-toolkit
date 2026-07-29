@@ -66,9 +66,7 @@ python "$GUARD" extract          # 提取凭证并复检
 
 | Command | Description |
 |---------|-------------|
-| `boss hr applications` | 查看候选人投递申请 |
 | `boss hr candidates <keyword>` | 搜索候选人 |
-| `boss hr chat` | 招聘者沟通列表 |
 | `boss hr resume` | 查看/请求候选人简历 |
 | `boss hr reply <friend_id> <message>` | 回复候选人消息 |
 | `boss hr request-resume <friend_id> --job-id <id>` | 请求候选人附件简历 |
@@ -108,3 +106,13 @@ boss ... (no flags)
 - 不自动发消息（CLI 权限不足）
 - 默认低风险模式阻断批量操作
 - 候选人数据链路默认阻断敏感操作
+
+## 端到端编排流程入口
+
+> 本 SKILL 是底层 CLI 参考。boss-hr-agent-toolkit 的**端到端编排流程**（推荐牛人列表 → 下载 → LLM 评分 → HTML 报告 → 自动打招呼）见 `boss-hr-auto/SKILL.md`：
+>
+> - 候选人累计池 + 简历去重落在 `~/Desktop/boss-hr-output/<岗位名>/state/`（跨 run 不覆盖）
+> - 每次筛选任务一个 `runs/<run_id>/` 目录，过程文件落 `runs/<run_id>/process/`
+> - 唯一键 `candidate_key = "{encrypt_job_id}:{encrypt_geek_id}"`，禁止用姓名
+>
+> 完整工作流见 `boss-recommend-downloader/SKILL.md` 和 `boss-hr-auto/SKILL.md`。

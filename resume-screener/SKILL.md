@@ -55,10 +55,12 @@ description: |
 **CLI**：
 
 ```bash
-python score_resumes.py --input <llm_scores.json> \
-                       --output <screening_results.json> \
-                       --job-name "车架工程师" \
-                       --job-info <JD JSON 字符串>
+python score_resumes.py \
+  --input <llm_scores.json> \
+  --output <screening_results.json> \
+  --job-name "<岗位名>" \
+  --job-info <JD JSON 字符串> \
+  --run-id <run_id>
 ```
 
 ### `scripts/school_tier.py`
@@ -75,46 +77,26 @@ info = lookup("江南大学")
 
 ---
 
-## 分批策略
-
-按 `boss-recommend-downloader` 的下载批次**逐批**评分，每批独立写文件、最后合并。
-
-- **批次大小**：默认每批 25 份（下载侧默认 `--batch-size 25`）
-- **单批内部小批**：若 25 份简历偏长或 JD 复杂，LLM 内部可按 **10 份/次**再分小批循环处理，结果合并到同一个 `_llm_scores_batch_N.json`
-- **中途容错**：单批评分失败不影响其他批；可重跑该批
-
 ## 完整工作流
 
 ```bash
-# === Step 3a: 逐批评分（与下载批次对齐）===
-# 假设已有 batch_1_resumes.json / batch_2_resumes.json / ...（来自 boss-recommend-downloader）
+# 假设已有 runs/<run_id>/process/new_resumes.json（来自 boss-recommend-downloader）
 
-# 对每批简历：
-for batch_n in 1 2 3 ...:
-    # 1. LLM 读 batch_n_resumes.json + JD
-    # 2. LLM 真实分析每份简历，评 4 维度最终分（exp / skill / proj / major）
-    #    — 单批 25 份时，可内部按 10 份/次循环
-    # 3. 对每份评分，agent 调 validate_score(score) 收尾：
-    #    - 自动从 score 拆出纯校名
-    #    - 自动用 school_tier 查 edu（强制覆盖 LLM 凭印象打的分数）
-    #    - 自动重算 weighted + total（按公式）
-    #    - 自动判定 tier
-    # 4. 写出 _llm_scores_batch_${batch_n}.json
+# 1. LLM agent 读 new_resumes.json + job_detail.json
+# 2. LLM agent 调 LLM API 逐份简历评 4 维度（exp / skill / proj / major）
+# 3. 写 _llm_scores.json 到 runs/<run_id>/process/_llm_scores.json
+#    - 必须填 school_name（纯校名，不带专业/学历后缀）让 school_tier 能查
+# 4. 跑脚本收尾
+python score_resumes.py \
+  --input runs/<run_id>/process/_llm_scores.json \
+  --output runs/<run_id>/process/screening_results.json \
+  --job-name "<岗位名>" \
+  --run-id <run_id>
 
-# === Step 3b: 合并所有批次 ===
-# 方式 1（推荐）：LLM agent 在内存里把所有 batch 的 _llm_scores_batch_*.json
-#               拼成一个 list，写 _llm_scores.json
-# 方式 2：跑 python -c "import json,glob; json.dump(sum([json.load(open(f,encoding='utf-8')) for f in sorted(glob.glob('_llm_scores_batch_*.json'))], []), open('_llm_scores.json','w',encoding='utf-8'), ensure_ascii=False, indent=2)"
-
-# === Step 3c: 跑评分脚本 ===
-python score_resumes.py --input _llm_scores.json \
-                       --output screening_results.json \
-                       --job-name "车架工程师" \
-                       --job-info <JD JSON 字符串>
-
-# === Step 4: 生成 HTML 报告 ===
-python generate_html_report.py --input screening_results.json --output <job_name>_统一方案.html
-preview_url 在 IDE 内置浏览器打开
+# Step 4: 生成 HTML 报告
+python generate_html_report.py \
+  --input runs/<run_id>/process/screening_results.json \
+  --output runs/<run_id>/<run_id>_<岗位名>_简历筛选报告.html
 ```
 
 ## 工作区路径约定
@@ -122,21 +104,31 @@ preview_url 在 IDE 内置浏览器打开
 **所有数据统一存放在 `~/Desktop/boss-hr-output/<job_name>/` 下**，由 `shared/output_manager.JobOutputManager` 管理。
 
 ```
-~/Desktop/boss-hr-output/<job_name>/
-├── process/
-│   ├── job_detail.json              ← Step 1: boss_jd.py 输出
-│   ├── recommend_geek_ids.json      ← Step 2: recommend_list.py 输出
-│   ├── batch_N_resumes.json         ← Step 2: recommend_download.py 输出（每批）
-│   ├── test_resumes.json            ← Step 2: 累计所有已下载简历
-│   ├── _llm_scores_batch_N.json     ← Step 3: LLM agent 评分（每批，可选）
-│   ├── _llm_scores.json             ← Step 3: 合并后的全量评分（喂给 score_resumes.py）
-│   └── screening_results.json       ← Step 3: score_resumes.py 输出
-└── <job_name>_统一方案.html          ← Step 4: generate_html_report.py 输出
+~/Desktop/boss-hr-output/<岗位名>/
+├── state/                                  # 跨 run 保留（不覆盖）
+│   ├── candidate_pool.json                 # 累计候选人
+│   ├── download_state.json                 # 下载状态
+│   ├── resumes_master.json                 # 累计成功简历（含 _meta）
+│   └── collection_state.json
+└── runs/
+    └── 2026-07-27_083015/                  # 一次筛选任务
+        ├── 2026-07-27_083015_<岗位名>_简历筛选报告.html
+        └── process/
+            ├── job_detail.json              ← Step 1: boss_jd.py 输出
+            ├── recommend_geek_ids.json      ← Step 2: recommend_list.py 输出（本次新增）
+            ├── new_resumes.json             ← Step 2: recommend_download.py 输出（本次新增）
+            ├── _llm_scores.json             ← Step 3: LLM agent 评分（合并后）
+            ├── screening_results.json       ← Step 3: score_resumes.py 输出
+            ├── failed_resumes.json          ← Step 2: 失败列表
+            ├── run_summary.json             ← run_all.py 自动生成
+            └── run_log.txt                  ← run_all.py 自动生成
 ```
 
 > 上游 `boss-job-detail` / `boss-recommend-downloader` 已自动写入此目录，下游脚本（`score_resumes.py` / `generate_html_report.py`）通过 `--input/--output` 读取此目录。
 >
-> `JobOutputManager` 提供的标准路径属性：`jd_path` / `recommend_geek_ids_path` / `resumes_path` / `screening_results_path` / `report_path`。
+> `JobOutputManager` 提供的标准路径属性：`jd_path` / `recommend_geek_ids_path` / `new_resumes_path` / `screening_results_path` / `report_path` / `run_summary_path`。
+>
+> **同一 run 必须传同一个 `--run-id`** 给所有脚本（list / download / score / HTML），产物才落在同一个 `runs/<run_id>/`。
 
 ---
 
@@ -226,8 +218,8 @@ LLM 在评 exp 时综合以下 3 个因素，给一个**最终分**：
 - 按 JD 列出的核心技能清单评估"覆盖度 × 熟练度"：
   - 全覆盖且能独立负责核心模块 = 85–100
   - 核心技能 70%+ 且较熟 = 70–84
-  - 覆盖 40–70% 或仅部分了解 = 55–69
-  - 覆盖 <40% 或仅字面提及 = 40–54
+  - 覆盖 40-70% 或仅部分了解 = 55-69
+  - 覆盖 <40% 或仅字面提及 = 40-54
   - 有 JD 硬性要求但不会的"硬伤"：该档下限再 −10
 
 **④ 项目经历 proj（LLM 评最终分 0–100）**

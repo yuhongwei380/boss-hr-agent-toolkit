@@ -61,6 +61,7 @@ body { font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif; backgro
 .header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); color:#fff; padding:36px 32px; border-radius:12px; margin-bottom:24px; box-shadow:0 4px 12px rgba(0,0,0,0.15); }
 .header h1 { font-size:28px; margin-bottom:8px; }
 .header .subtitle { opacity:0.85; margin-bottom:20px; font-size:14px; }
+.header .run-badge { display:inline-block; background:rgba(255,255,255,0.12); padding:6px 14px; border-radius:20px; font-size:12px; margin-bottom:14px; font-family:monospace; letter-spacing:0.3px; }
 .meta-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-top:16px; }
 .meta-item { background:rgba(255,255,255,0.08); padding:12px 16px; border-radius:8px; backdrop-filter:blur(10px); }
 .meta-item .label { font-size:11px; opacity:0.75; text-transform:uppercase; letter-spacing:0.5px; }
@@ -292,6 +293,7 @@ def render(data: dict) -> str:
 <header class="header">
   <h1>📊 {meta.get('title', '简历筛选报告')}</h1>
   <div class="subtitle">{meta.get('subtitle', '')}</div>
+  {f'<div class="run-badge">🆔 run_id: {data.get("run_id") or meta.get("run_id", "")}　|　🕐 生成时间: {data.get("generated_at") or meta.get("generated_at") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</div>' if (data.get('run_id') or meta.get('run_id')) else ''}
   <div class="meta-grid">
     <div class="meta-item"><div class="label">岗位</div><div class="value">{job.get('name', '')}</div></div>
     <div class="meta-item"><div class="label">公司</div><div class="value">{job.get('company', '')}</div></div>
@@ -356,9 +358,31 @@ def render(data: dict) -> str:
 # === CLI 入口 ===
 def main():
     ap = argparse.ArgumentParser(description="HTML 报告生成（统一方案）")
-    ap.add_argument("--input", required=True, help="score_resumes.py 输出的 screening_results.json")
-    ap.add_argument("--output", required=True, help="HTML 报告输出路径")
+    ap.add_argument("--input", default=None, help="score_resumes.py 输出的 screening_results.json。不传则按 orchestrator 自动定位")
+    ap.add_argument("--output", default=None, help="HTML 报告输出路径。不传则按 orchestrator 自动定位")
+    ap.add_argument("--job-name", default=None, help="岗位名（orchestrator 模式必填）")
+    ap.add_argument("--run-id", default=None, help="本次 run ID（默认走 orchestrator）")
     args = ap.parse_args()
+
+    # 默认走 orchestrator，确保 HTML 报告落到跟前面 Step 同一 run 目录
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
+    from output_manager import JobOutputManager
+    from run_orchestrator import RunOrchestrator
+
+    job_name = args.job_name or (args.input and Path(args.input).parent.parent.parent.name) or None
+    if not job_name:
+        raise SystemExit("需要 --job-name 或 --input 指向 runs/<run_id>/process/screening_results.json")
+
+    orch = RunOrchestrator(job_name)
+    run_id = orch.bind_or_create(args.run_id)
+    out = JobOutputManager(job_name, run_id=run_id)
+
+    if not args.input:
+        args.input = str(out.screening_results_path)
+        print(f'[orchestrator] --input 默认: {args.input}')
+    if not args.output:
+        args.output = str(out.report_path)
+        print(f'[orchestrator] --output 默认: {args.output}')
 
     data = json.load(open(args.input, encoding="utf-8"))
     html = render(data)
@@ -367,6 +391,10 @@ def main():
     print(f"✅ HTML 报告已生成: {args.output}")
     print(f"   文件大小: {Path(args.output).stat().st_size} 字节")
     print(f"   候选人: {len(data.get('candidates', []))} 人")
+
+    # 收官：标记报告完成 + 清掉 current_run.json
+    orch.mark_done('report', run_id=run_id)
+    orch.finish()
 
 
 if __name__ == "__main__":

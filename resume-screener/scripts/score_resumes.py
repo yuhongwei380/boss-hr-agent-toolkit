@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""简历评分统一方案（融合 v1.0 框架 + v2.0 LLM 主导）
+"""简历评分统一方案（LLM 主导 + school_tier 学历分档校准）
 
 设计核心：
   - LLM 主导：4 维度（exp/skill/proj/major）由 LLM 真实分析完整简历
   - 脚本辅助：1 维度（edu/学校档次）由 school_tier 查表
-  - 公式：5 维度 weighted 求和 = total（按 SKILL.md 权重）
+  - 公式：5 维度 weighted 求和 = total
   - 通用：不限岗位
   - 可复现：公式 + 权重 + tier 阈值明确
 
@@ -74,6 +74,7 @@ import json
 import os
 import sys
 import io
+import time
 import argparse
 from pathlib import Path
 
@@ -161,9 +162,11 @@ def validate_score(score: dict) -> dict:
             score["dims"]["edu"] = info["score"]
             score["dims_edu_reason"] = f"{info['tier']}（school_tier 查询：{school}）"
         else:
-            score["dims_edu_reason"] = f"缺失（{school} 不在学校表）"
+            score["dims"]["edu"] = 60
+            score["dims_edu_reason"] = f"缺失（{school} 不在学校表，按60计）"
     else:
-        score["dims_edu_reason"] = "缺失（无学校名）"
+        score["dims"]["edu"] = 60
+        score["dims_edu_reason"] = "缺失（无学校名，按60计）"
 
     score["weighted"] = calc_weighted(score["dims"])
     score["total"] = calc_total(score["weighted"])
@@ -252,11 +255,28 @@ def build_meta(job_name: str, job_info: dict = None) -> dict:
 
 def main():
     ap = argparse.ArgumentParser(description="简历评分统一方案（LLM 4 维度 + school_tier 校准）")
-    ap.add_argument("--input", required=True, help="LLM 评分 JSON（4 维度）")
-    ap.add_argument("--output", required=True, help="标准化后的 screening_results.json（5 维度 + tier）")
+    ap.add_argument("--input", default=None, help="LLM 评分 JSON（4 维度）。不传则按 orchestrator 的 run_id 自动定位 runs/<run_id>/process/_llm_scores.json")
+    ap.add_argument("--output", default=None, help="标准化后的 screening_results.json。不传则按 orchestrator 自动定位到 run_dir")
     ap.add_argument("--job-name", default="工程师", help="岗位名")
     ap.add_argument("--job-info", default=None, help="JD 完整信息 JSON 字符串（可选）")
+    ap.add_argument("--run-id", default=None, help="本次 run ID（默认走 orchestrator；写入 meta，方便与 HTML 报告关联）")
     args = ap.parse_args()
+
+    # 默认走 orchestrator，确保落到跟前面 Step 同一 run 目录
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
+    from output_manager import OUTPUT_ROOT, JobOutputManager
+    from run_orchestrator import RunOrchestrator
+    orch = RunOrchestrator(args.job_name)
+    run_id = orch.bind_or_create(args.run_id)
+    out = JobOutputManager(args.job_name, run_id=run_id)
+
+    # input/output 没传 → 用 orchestrator 推断的 run_dir
+    if not args.input:
+        args.input = out.get_process_path('_llm_scores.json')
+        print(f'[orchestrator] --input 默认: {args.input}')
+    if not args.output:
+        args.output = out.screening_results_path
+        print(f'[orchestrator] --output 默认: {args.output}')
 
     data = json.load(open(args.input, encoding="utf-8"))
     if not isinstance(data, list):
@@ -286,9 +306,17 @@ def main():
     job_info = json.loads(args.job_info) if args.job_info else {}
 
     # 组装 screening_results.json
+    meta = build_meta(args.job_name, job_info)
+    generated_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    if args.run_id:
+        meta["run_id"] = args.run_id
+        meta["generated_at"] = generated_at
+
     output = {
         "job_name": args.job_name,
-        "meta": build_meta(args.job_name, job_info),
+        "run_id": args.run_id,
+        "generated_at": generated_at,
+        "meta": meta,
         "summary": summary,
         "dimension_labels": DIM_LABELS,
         "candidates": candidates,
@@ -302,6 +330,7 @@ def main():
     print(f"✓ 处理 {len(data)} 份评分")
     print(f"  推荐 {summary['recommend']} / 待定 {summary['pending']} / 不推荐 {summary['reject']}")
     print(f"  输出: {args.output}")
+    orch.mark_done('score', run_id=run_id)  # 标记 score 步骤完成
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
 import fix_encoding  # noqa: E402  # 强制 Windows UTF-8 stdout
 from output_manager import JobOutputManager
+from run_orchestrator import RunOrchestrator
 
 from patchright.sync_api import sync_playwright
 from human_interaction import human_scroll
@@ -39,7 +40,11 @@ def get_recommend_candidates(job_name='车架工程师', max_candidates=None,
         batch_size:      每批收集人数（分批模式）
         batch_number:    第几批，从 1 开始（分批模式）
     """
-    output = JobOutputManager(job_name)
+    # 2026-07-28 修复：跟走 RunOrchestrator，让 list 落到跟前面 step 同一 run_id，
+    #   避免每次 skill 默认开新 run 目录。
+    orch = RunOrchestrator(job_name)
+    run_id = orch.bind_or_create()
+    output = JobOutputManager(job_name, run_id=run_id)
 
     # 分批状态文件
     state_path = output.get_process_path('batch_state.json')

@@ -51,7 +51,12 @@ def fetch_jd(encrypt_job_id):
         page = pages[0] if pages else browser.contexts[0].new_page()
 
         target = f"https://www.zhipin.com/web/chat/job/edit?encryptId={encrypt_job_id}&jobCreateSource=0&enterSource=6"
-        page.goto(target, wait_until="networkidle", timeout=30000)
+        # BOSS 该页是 iframe + 长轮询（IM 心跳），networkidle 常等不到 → 只等 DOM ready
+        page.goto(target, wait_until="domcontentloaded", timeout=30000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            pass  # 长轮询导致 networkidle 永不触发，属正常
 
         body_text = ""
         form_vals = []
@@ -97,6 +102,10 @@ if __name__ == "__main__":
     parser.add_argument('query', help='encryptJobId | jobId | 职位名')
     parser.add_argument('--job-name', default=None,
                         help='工作区目录名（默认自动用 jobName 清洗为合法目录名）')
+    parser.add_argument('--run-id', default=None,
+                        help='本次 run ID（默认自动生成；同一 run 内的所有产物落同一 runs/<run_id>/）')
+    parser.add_argument('--force', action='store_true',
+                        help='强制覆盖已有 run（同 run 内补写 job_detail.json 用）')
     args = parser.parse_args()
 
     eid, name = resolve_encrypt_id(args.query)
@@ -108,15 +117,41 @@ if __name__ == "__main__":
     raw = fetch_jd(eid)
 
     job_name = args.job_name or _safe_name(name)
-    output = JobOutputManager(job_name)
+
+    # 默认走 orchestrator，让 Step 2/3/4 自动绑定同一 run_id
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
+    from run_orchestrator import RunOrchestrator
+    orch = RunOrchestrator(job_name)
+    run_id = orch.bind_or_create(args.run_id, job_id=eid, force=getattr(args, 'force', False))
+
+    output = JobOutputManager(job_name, run_id=run_id)
+    output.ensure_run_dir()
+    print(f"run_id: {run_id}（orchestrator 绑定）")
+
+    # 异常护栏：脚本崩溃时若没写出 job_detail.json，自动清空 run_dir
+    import atexit
+    _SAVED = False
+
+    def _auto_prune():
+        if not _SAVED and output.prune_if_empty():
+            print(f'⚠️  本次 run 未产生 job_detail.json，已清理: {output.run_dir}')
+
+    atexit.register(_auto_prune)
 
     save_data = {
         "jobName": name,
         "encryptJobId": eid,
         "bodyText": raw.get("bodyText", ""),
         "formValues": raw.get("formValues", []),
+        "_meta": {
+            "run_id": output.run_id,
+            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        },
     }
     out_path = Path(output.jd_path)
     out_path.write_text(json.dumps(save_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _SAVED = True  # 成功落盘，保留 run
+    orch.mark_done('jd', run_id=run_id)  # 标记 jd 步骤完成，下游可跟走
     print(f"Saved to {out_path}")
+    print(f"run_id: {output.run_id}")
     print("OK")

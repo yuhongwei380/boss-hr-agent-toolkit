@@ -16,6 +16,13 @@ description: |
   **子 Skill 说明**：本包的 boss-job-detail、boss-resume-downloader、boss-recommend-downloader、resume-screener、html-report 均为此编排流程的子步骤，不应作为入口直接加载。请始终先加载本 Skill 获取完整工作流，再按 Step 顺序调用子 Skill。
 type: workflow
 ---
+
+> **stoken 说明（2026-07-28 更新）**：本工具包全流程走 patchright 直连 CDP 浏览器
+> （用浏览器真实的 wt2/zp_at/bst cookie），不依赖 boss CLI 内部的 `__zp_stoken__`。
+> 如果 `boss_login_guard.py check --purpose resume` 返回 warning 提到 stoken 缺失，
+> **直接忽略继续运行**即可。需要用裸 `boss` CLI（不走本工具包）时，再手动跑
+> `python boss_login_guard.py ensure-stoken`。
+
 # BOSS 直聘 HR 简历筛选全流程
 
 > ** 入口声明**：本 Skill 是 boss-hr-agent-toolkit 项目唯一入口。下文的子 Skill 均应按本 Skill 的编排顺序调用，不得作为独立入口加载。

@@ -7,13 +7,23 @@
 ```
 ~/Desktop/boss-hr-output/                    # 所有输出放这里
 └── <岗位名>/                                  # 按岗位名建子文件夹
-    ├── <岗位名>_简历筛选报告.html              # 最终 HTML 报告
-    └── process/                               # 过程文件（留痕查阅）
-        ├── job_detail.json                    # JD 数据
-        ├── recommend_geek_ids.json            # 候选人 ID 列表
-        ├── test_resumes.json                  # 完整简历数据
-        ├── screening_results.json             # 评分结果
-        └── failed_resumes.json                # 失败列表
+    ├── state/                                 # 跨 run 累计，不覆盖
+    │   ├── candidate_pool.json
+    │   ├── download_state.json
+    │   ├── resumes_master.json
+    │   ├── geek_positions.json
+    │   └── current_run.json
+    └── runs/
+        └── <run_id>/                          # 一次筛选任务
+            ├── <run_id>_<岗位名>_简历筛选报告.html
+            └── process/
+                ├── job_detail.json
+                ├── recommend_geek_ids.json
+                ├── new_resumes.json
+                ├── _llm_scores.json
+                ├── screening_results.json
+                ├── greet_log.json
+                └── failed_resumes.json
 ```
 
 ## 🚨 重要规则
@@ -95,8 +105,13 @@ output.cleanup_temp_scripts()
 - `recommend_download.py` — 批量获取完整简历
 - `run_all.py` — 一键运行全流程
 
+### boss-hr-greet/scripts/
+- `auto_greet.py` — 高分候选人自动打招呼（位置表 + 倒序招呼）
+
 ### shared/
 - `output_manager.py` — 统一文件路径管理（所有 skill 共用）
+- `run_orchestrator.py` — 跨 Step run_id 编排（让所有产物落在同一 runs/<run_id>/）
+- `job_resume_store.py` — 候选人键 + 三态状态读写 + 简历合并
 
 ## 🧹 清理桌面散落文件
 
@@ -109,7 +124,6 @@ desktop = os.path.expanduser('~/Desktop')
 temp_files = [
     'generate_report.py',
     'generate_report_corrected.py',
-    'generate_report_v2.py',
     'job_detail.json',
     'recommend_geek_ids.json',
     'screening_results.json',
@@ -128,16 +142,44 @@ for f in temp_files:
         print(f'已删除：{f}')
 ```
 
+### 清理 toolkit 根目录的临时诊断脚本
+
+排查过程中可能落在 toolkit 根目录的 `_diag_*.py` 临时脚本（不属于任何 skill，不该留）。运行：
+
+```python
+import os, glob
+
+toolkit_root = os.path.dirname(os.path.abspath(__file__))
+patterns = ['_diag_*.py', '_tmp_*.py']
+
+removed = []
+for pattern in patterns:
+    for path in glob.glob(os.path.join(toolkit_root, pattern)):
+        os.remove(path)
+        removed.append(os.path.basename(path))
+
+if removed:
+    print('已删除：', removed)
+else:
+    print('toolkit 根目录无临时诊断脚本')
+```
+
 ## 📖 示例：完整工作流
 
 ```bash
-# 1. 创建岗位文件夹（自动）
-# 2. 获取 JD → 保存到 process/job_detail.json
-# 3. 获取候选人列表 → 保存到 process/recommend_geek_ids.json
-# 4. 下载完整简历 → 保存到 process/test_resumes.json
-# 5. 评分 → 保存到 process/screening_results.json
-# 6. 生成报告 → 保存到 <岗位名>_简历筛选报告.html
-# 7. 清理临时脚本 → 删除 generate_report.py 等
+# 1. 一把梭串完 Step 1→5（由 boss-hr-auto/scripts/auto_pipeline.py 编排）
+python -X utf8 boss-hr-auto/scripts/auto_pipeline.py \
+  --encrypt-job-id "<encryptJobId>" \
+  --job-name "车架工程师" --max 10
+
+# 中间产物
+# - process/job_detail.json         Step 1 boss_jd.py
+# - process/recommend_geek_ids.json Step 2 recommend_list.py
+# - process/new_resumes.json        Step 2 recommend_download.py
+# - process/_llm_scores.json        Step 3 LLM agent 评 4 维度
+# - process/screening_results.json  Step 3 score_resumes.py
+# - <run_id>_<岗位>_简历筛选报告.html  Step 4
+# - process/greet_log.json          Step 5 auto_greet.py
 ```
 
-最终交付给用户的只有一个 HTML 报告，其他都是留痕查阅的过程文件。
+最终交付给用户的只有一份 HTML 报告 + 一份打招呼日志（greet_log.json），其他都是留痕查阅的过程文件。
