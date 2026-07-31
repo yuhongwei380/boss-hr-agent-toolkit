@@ -312,9 +312,16 @@ print(result.returncode)
 print(result.stdout)
 ```
 
-### CLI 调用（推荐用 --spec-file 避免命令行参数解析问题）
+### CLI 调用（智能体内部用 `--spec-file` 避免命令行参数解析问题）
 
-创建 UTF-8 spec 文件（任意文件名，如 `spec.json`）：
+> **2026-07-31 注**：项目**不再附带** spec_*.json 模板文件。spec 是 cli_runner
+> 的内部调用方式——智能体在跨进程/跨平台调用业务脚本时构造临时 spec
+> 文件（任意文件名），避免 Windows PowerShell/CMD 对中文、空格、JSON
+> 字符串参数解析不稳定。
+>
+> 用户跑命令时**直接**用 `python -X utf8 ... <script> <args>` 即可，不需要 spec。
+
+智能体构造 UTF-8 spec 文件（任意文件名，如 `/tmp/spec_xxx.json`）：
 
 ```json
 {
@@ -335,11 +342,8 @@ print(result.stdout)
 执行：
 
 ```bash
-# Bash / macOS / Linux
-python -X utf8 shared/cli_runner.py --spec-file spec.json
-
-# PowerShell / Windows
-python -X utf8 shared/cli_runner.py --spec-file spec.json
+# Bash / macOS / Linux / PowerShell / cmd（命令相同）
+python -X utf8 shared/cli_runner.py --spec-file /tmp/spec_xxx.json
 ```
 
 统一 JSON 输出（stdout）：
@@ -366,7 +370,7 @@ python -X utf8 shared/cli_runner.py --spec-file spec.json
 }
 ```
 
-### 工具白名单（cli_runner 仅接受以下 7 个 tool）
+### 工具白名单（cli_runner 仅接受以下 9 个 tool）
 
 | tool 名 | 对应脚本 |
 |---------|---------|
@@ -374,6 +378,8 @@ python -X utf8 shared/cli_runner.py --spec-file spec.json
 | `confirm_run` | `shared/confirm_run.py` |
 | `recommend_list` | `boss-recommend-downloader/scripts/recommend_list.py` |
 | `recommend_download` | `boss-recommend-downloader/scripts/recommend_download.py` |
+| `prepare_scoring_inputs` | `resume-screener/scripts/prepare_scoring_inputs.py` |
+| `collect_llm_scores` | `resume-screener/scripts/collect_llm_scores.py` |
 | `score_resumes` | `resume-screener/scripts/score_resumes.py` |
 | `generate_html_report` | `html-report/scripts/generate_html_report.py` |
 | `auto_greet` | `boss-hr-greet/scripts/auto_greet.py` |
@@ -383,20 +389,10 @@ python -X utf8 shared/cli_runner.py --spec-file spec.json
 ### 如何执行 Step 1 并停在确认门
 
 ```bash
-# 1. 写 spec_step1.json
-cat > spec_step1.json << 'EOF'
-{
-  "tool": "boss_jd",
-  "args": [
-    "<查询条件：encryptJobId 或 jobId 或岗位名>",
-    "--job-name", "<岗位名>",
-    "--encrypt-job-id", "<id>"
-  ]
-}
-EOF
-
-# 2. 跑 Step 1
-python -X utf8 shared/cli_runner.py --spec-file spec_step1.json
+# 直接调业务脚本（推荐：用户/简单调试场景）
+python -X utf8 boss-job-detail/scripts/boss_jd.py "线控底盘制动、转向工程师" \
+  --job-name "线控底盘制动、转向工程师" \
+  --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX"
 # → 创建新 run，run.json.confirmed=false，输出 run_id，**当前智能体轮次结束**
 ```
 
@@ -405,46 +401,29 @@ python -X utf8 shared/cli_runner.py --spec-file spec_step1.json
 ### 用户确认后执行 Step 2
 
 ```bash
-# 写 spec_confirm.json（用户确认）
-cat > spec_confirm.json << 'EOF'
-{
-  "tool": "confirm_run",
-  "args": [
-    "--job-name", "<岗位名>",
-    "--encrypt-job-id", "<id>",
-    "--run-id", "<Step 1 拿到的 run_id>"
-  ]
-}
-EOF
-python -X utf8 shared/cli_runner.py --spec-file spec_confirm.json
+# 1) confirm_run 把 run.json.confirmed 翻 true
+python -X utf8 shared/confirm_run.py \
+  --job-name "线控底盘制动、转向工程师" \
+  --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX" \
+  --run-id "<Step 1 拿到的 run_id>"
 
-# 再写 spec_step2.json
-cat > spec_step2.json << 'EOF'
-{
-  "tool": "recommend_list",
-  "args": [
-    "--job-name", "<岗位名>",
-    "--encrypt-job-id", "<id>",
-    "--run-id", "<run_id>",
-    "--batch-size", "25",
-    "--batch", "1"
-  ]
-}
-EOF
-python -X utf8 shared/cli_runner.py --spec-file spec_step2.json
+# 2) recommend_list 拉候选人 ID（注意：在 BOSS 推荐牛人页面手动调整筛选条件后再跑）
+python -X utf8 boss-recommend-downloader/scripts/recommend_list.py \
+  --job-name "线控底盘制动、转向工程师" \
+  --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX" \
+  --run-id "<run_id>" \
+  --batch-size 25 --batch 1
 ```
 
 ### 直接 CLI（人工调试方式）
 
-各业务脚本**仍保留独立 CLI 能力**，便于测试和人工排错。Runner 是推荐入口，但直接跑业务脚本也工作：
+各业务脚本**仍保留独立 CLI 能力**，便于测试和人工排错：
 
 ```bash
 # 直接调用（绕过 cli_runner）
 python -X utf8 resume-screener/scripts/score_resumes.py \
   --job-name "<岗位名>" --encrypt-job-id "<id>" --run-id "<run_id>"
 ```
-
-> ❌ 临时 `.ps1` / `.bat` 多层引号调用示例**已删除** —— 推荐用 `--spec-file`。
 
 ---
 
