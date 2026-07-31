@@ -307,10 +307,14 @@ boss-hr-agent-toolkit/
             ├── <run_id>_screening_report.html     # 最终 HTML 报告
             └── process/                            # 过程文件（留痕查阅）
                 ├── job_detail.json                 # Step 1 输出
-                ├── batch_1_ids.json / recommend_geek_ids.json
-                ├── new_resumes.json                # Step 2 输出
-                ├── _llm_scores.json                # Step 3：LLM agent 评分
-                ├── screening_results.json          # Step 3 输出
+                ├── recommend_geek_ids.json         # Step 2a 输出
+                ├── new_resumes.json                # Step 2b 输出
+                ├── scoring/                        # Step 3a 净化层输出
+                │   ├── manifest.json
+                │   ├── inputs/candidate_<geek_id>.json
+                │   └── outputs/candidate_<geek_id>.json
+                ├── _llm_scores.json                # Step 3b collect 合并产物
+                ├── screening_results.json          # Step 3c score 收尾产物
                 ├── failed_resumes.json
                 └── greet_log.json                  # Step 5 输出
 ```

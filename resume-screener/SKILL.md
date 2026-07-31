@@ -206,8 +206,8 @@ python html-report/scripts/generate_html_report.py \
             ├── <run_id>_screening_report.html
             └── process/
                 ├── job_detail.json              ← Step 1: boss_jd.py 输出
-                ├── batch_1_ids.json / recommend_geek_ids.json  ← Step 2: list 输出
-                ├── new_resumes.json             ← Step 2: recommend_download.py 输出
+                ├── recommend_geek_ids.json      ← Step 2a: list 输出
+                ├── new_resumes.json             ← Step 2b: download 输出
                 ├── scoring/                     ← Step 3: prepare_scoring_inputs.py 输出
                 │   ├── manifest.json             # 候选人清单 + status（pending/scored/missing）
                 │   ├── _skipped.json             # 被跳过的简历

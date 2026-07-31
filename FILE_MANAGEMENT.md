@@ -187,12 +187,18 @@ python -X utf8 boss-recommend-downloader/scripts/recommend_list.py \
 python -X utf8 boss-recommend-downloader/scripts/recommend_download.py \
   --job-name "车架工程师" --run-id "$RUN_ID" --max 25
 
-# 3. Step 3 LLM 评 4 维度 → 写 _llm_scores.json → 脚本收尾
-#    （_llm_scores.json 由智能体直接写入 process/，不要拆成 _llm_1/_split_N 等临时文件）
+# 3. Step 3 评分（净化层 → LLM 落盘 → 合并 → 收尾）
+#    3a) 净化：new_resumes.json → scoring/inputs/candidate_<geek_id>.json + manifest.json
+python -X utf8 resume-screener/scripts/prepare_scoring_inputs.py \
+  --job-name "车架工程师" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID"
+#    3b) LLM 智能体：读 scoring/inputs/，逐份评，每评一份立即落盘 scoring/outputs/candidate_<geek_id>.json
+#        （不在 process/ 落 _split_N.json / _llm_1.json 等临时分片文件；outputs/ 是唯一落盘点）
+#    3c) 合并：scoring/outputs/ → _llm_scores.json（幂等可重跑）
+python -X utf8 resume-screener/scripts/collect_llm_scores.py \
+  --job-name "车架工程师" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID"
+#    3d) 收尾：edu 校准 + 加权 + tier 判定 → screening_results.json
 python -X utf8 resume-screener/scripts/score_resumes.py \
-  --input  "runs/$RUN_ID/process/_llm_scores.json" \
-  --output "runs/$RUN_ID/process/screening_results.json" \
-  --job-name "车架工程师" --run-id "$RUN_ID"
+  --job-name "车架工程师" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID"
 
 # 4. Step 4 生成报告
 python -X utf8 html-report/scripts/generate_html_report.py \

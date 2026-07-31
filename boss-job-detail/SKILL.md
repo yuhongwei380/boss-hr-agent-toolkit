@@ -75,14 +75,17 @@ python scripts/boss_jd.py <查询条件> [--job-name <name>] [--encrypt-job-id <
         └── <run_id>/                       # 一次筛选任务
             ├── <run_id>_screening_report.html
             └── process/
-                ├── job_detail.json         ← 本脚本输出
-                ├── batch_1_ids.json
-                ├── new_resumes.json
-                ├── failed_resumes.json
-                ├── _llm_scores.json
-                ├── screening_results.json
-                ├── greet_log.json
-                └── run_log.txt
+                ├── job_detail.json              ← 本脚本输出
+                ├── recommend_geek_ids.json      ← Step 2a: list 输出
+                ├── new_resumes.json             ← Step 2b: download 输出
+                ├── scoring/                     ← Step 3a: prepare 输出
+                │   ├── manifest.json
+                │   ├── inputs/candidate_<geek_id>.json
+                │   ├── outputs/candidate_<geek_id>.json
+                │   └── _skipped.json
+                ├── _llm_scores.json             ← Step 3b: collect 合并产物
+                ├── screening_results.json       ← Step 3c: score 收尾产物
+                └── greet_log.json               ← Step 5
 ```
 
 > **路径选择集中在 `shared/output_manager.JobOutputManager`**——CLI 脚本只接收并透传 `--encrypt-job-id`，不参与路径拼接，避免中文路径在 URL/文件 IO 里翻车。

@@ -43,8 +43,9 @@ type: lib
 
 ### 设计动机
 
-第三方 `boss_agent_cli` 提供 `boss login` / `boss me` / `boss status` 等命令检测登录态。
-本工具包**不再依赖**任何第三方 CLI，本模块用 patchright 直连 Edge CDP，自己判断：
+本工具包**不依赖**任何第三方 CLI（包括早期项目曾用的 `boss_agent_cli`
+的 `boss login` / `boss me` / `boss status` 等登录检测命令）。本模块用 patchright
+直连 Edge CDP，自己判断：
 
 - Edge 是否在指定端口（如 `http://localhost:9222`）跑着
 - BOSS 招聘者 session 是否有效（`zp_at` + `wt2` + `bst` 三 cookie 都在且非空）
@@ -119,8 +120,9 @@ if state['page_kind'] == 'unknown':
 
 ### 设计动机
 
-第三方 `boss_agent_cli` 提供 `boss --role recruiter hr jobs list` 拿招聘者岗位列表。
-本模块通过 patchright 连 CDP，在已登录的浏览器 context 里调 `fetch` 打
+本工具包**不依赖**任何第三方 CLI（包括早期项目曾用的 `boss_agent_cli` 的
+`boss --role recruiter hr jobs list` 命令）。本模块通过 patchright 连 CDP，
+在已登录的浏览器 context 里调 `fetch` 打
 `https://www.zhipin.com/wapi/zpjob/job/chatted/jobList`（GET），
 复用浏览器 TLS 指纹 + 自动带 cookie，**不依赖 stoken/手写 session.enc 同步**。
 
