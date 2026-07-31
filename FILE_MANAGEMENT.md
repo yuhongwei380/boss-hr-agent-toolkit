@@ -13,7 +13,6 @@
     │   ├── resumes_master.json
     │   ├── scored_state.json                  # 已评分记录（跨 run 评分去重）
     │   ├── geek_positions.json
-    │   └── current_run.json
     └── runs/
         └── <run_id>/                          # 一次筛选任务
             ├── <run_id>_<岗位名>_简历筛选报告.html
@@ -169,14 +168,14 @@ else:
 
 > **没有一把梭脚本。** `boss-hr-auto` 是纯文档 Skill，由智能体按 SKILL.md 的 Step 顺序
 > 依次调用各子 Skill 的脚本。**每一步都必须显式传同一个 `--run-id`**，否则产物会散落到
-> 不同 run 目录（脚本不传时会去读 `state/current_run.json`，可能落到上一次的旧 run）。
+> 不同 run 目录（2026-07-30 重构：run_id 是数据边界，必须显式传 `--run-id`；不再自动沿用）。
 
 ```bash
 # 0. 先开 run_id（所有 Step 共用这一个）
 RUN_ID=$(python -X utf8 -c "
 import sys; sys.path.insert(0,'shared')
 from run_orchestrator import RunOrchestrator
-print(RunOrchestrator('车架工程师').bind_or_create())
+print(RunOrchestrator('车架工程师').create_new_run())
 ")
 
 # 1. Step 1 提取 JD

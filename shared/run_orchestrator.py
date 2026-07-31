@@ -1,27 +1,37 @@
-"""跨 Step 串同一 run_id 的编排器 — 跟走 state/current_run.json。
+"""跨 run 数据边界编排器 — run_id 是本次任务的数据边界。
 
-约定（与原作者 state/current_run.json schema 一致）：
-    state/current_run.json:
-        {
-            "run_id": "YYYY-MM-DD_HHMMSS",
-            "job_name": "...",
-            "job_id": "<encryptJobId>",
-            "started_at": "...",
-            "steps_done": ["jd","download","score","report","greet"],
-            "last_step": "...",
-            "last_step_at": "..."
-        }
+设计原则（2026-07-30 重构）：
+  - 新任务永远 create_new_run()，禁止任何形式的「自动复用历史 run」。
+  - 继续某个旧任务必须显式传 run_id，调用 bind_existing_run(run_id)。
+  - 每个 run 拥有独立的 runs/<run_id>/run.json，记录：
+        confirmed 标志位（用户是否已确认）、steps_done、finished 等。
+  - 不再有 state/current_run.json（彻底废弃）。
+
+run.json 结构（每个 run 独立一份）：
+    {
+      "run_id": "2026-07-30_103000",
+      "encrypt_job_id": "...",
+      "started_at": "...",
+      "confirmed": false,            # 用户在 BOSS 调整完筛选条件后调 confirm_run.py 切 true
+      "user_confirmed_at": null,
+      "steps_done": ["jd","download",...],
+      "last_step": "...",
+      "last_step_at": "...",
+      "finished": false,
+      "finished_at": null,
+    }
 
 行为：
-    bind_or_create(run_id, job_id, force):
-      - run_id 显式：写入 current_run.json（允许跨 run 强制指定）。
-      - 否则：跟走 current_run.json 的 current run_id（若存在且未 finish）；
-              finished 时或没有时新建一个 run_id。
-      - 同一秒内已经存在 run_id 时，自动加 _2 / _3 ... 后缀，避免覆盖。
+    create_new_run()                       — 无条件创建新 run_id
+    bind_existing_run(run_id)              — 必传 run_id，校验 run_dir + encryptJobId
+    init_run_state(run_id)                 — 写 run.json（confirmed=false）
+    confirm_run(run_id)                    — confirmed=true（供 confirm_run.py 调用）
+    is_confirmed(run_id) -> bool           — Step 2 守卫
+    mark_done(step, run_id)                — 写步骤
+    finish(run_id)                         — 标记结束
 
-不做的事（与原作者一致）：
-    - 不创建目录。目录创建由 JobOutputManager.ensure_run_dir() 调用方按需触发。
-    - 不落 greeting/score 等任何业务数据，仅维护 current_run.json。
+旧接口（已废弃，调用即抛 RuntimeError）：
+    bind_or_create()  ← 任何生产代码不应再调用
 """
 from __future__ import annotations
 import json
@@ -32,8 +42,13 @@ from typing import Optional
 
 from output_manager import JobOutputManager, resolve_encrypt_job_id
 
-CURRENT_RUN_FILENAME = "current_run.json"
 COLLECTION_STATE_FILENAME = "collection_state.json"  # 旧版兼容：保留以备其他脚本读取
+
+# 退出码约定（智能体据此识别停下原因）
+EXIT_CODE_AWAITING_CONFIRMATION = 20   # confirmed != true
+EXIT_CODE_MISSING_RUN_ID = 22
+EXIT_CODE_RUN_NOT_FOUND = 23
+EXIT_CODE_RUN_JOB_MISMATCH = 24
 
 
 def _now_str() -> str:
@@ -41,167 +56,206 @@ def _now_str() -> str:
 
 
 class RunOrchestrator:
-    """跨 Step 串同一 run_id 的编排器。
+    """跨 run 数据边界编排器。"""
 
-    路径定位（2026-07-29 新设计）：
-      - 推荐传 encrypt_job_id（CLI --encrypt-job-id > env BOSS_HR_ENCRYPT_JOB_ID）
-      - 不传 → 沿用兼容模式（job_name 当目录名），但不推荐
-    """
+    RUN_FILENAME = "run.json"
 
-    def __init__(self, job_name: str, encrypt_job_id: Optional[str] = None):
+    def __init__(self, job_name: str, encrypt_job_id: Optional[str] = None,
+                 run_id: Optional[str] = None):
+        """
+        Args:
+            job_name:        岗位名
+            encrypt_job_id:  BOSS encryptJobId
+            run_id:          可选。如果传，会立刻实例化 JobOutputManager；
+                            不传也能调 create_new_run / bind_existing_run，
+                            后续 _mgr 会延迟创建。
+        """
         self.job_name = job_name
-        # encrypt_job_id 优先 CLI 透传 > env（兼容模式 None）
         self.encrypt_job_id = resolve_encrypt_job_id(encrypt_job_id)
-        self._mgr = JobOutputManager(
-            job_name,
+        # 延迟实例化 mgr —— 避免在没有 run_id 时就要求它必须传 run_id
+        self._mgr: Optional[JobOutputManager] = None
+        if run_id:
+            self._mgr = self._make_mgr(run_id)
+        self.collection_path = None  # 兼容旧代码（当前已不使用）
+
+    def _make_mgr(self, run_id: str) -> JobOutputManager:
+        return JobOutputManager(
+            job_name=self.job_name,
             encrypt_job_id=self.encrypt_job_id,
+            run_id=run_id,
             lazy=True,
         )
-        self.current_run_path = os.path.join(self._mgr.state_dir, CURRENT_RUN_FILENAME)
-        self.collection_path = os.path.join(self._mgr.state_dir, COLLECTION_STATE_FILENAME)
 
-    # ---------- 内部：读写 current_run.json ----------
-    def _load_current(self) -> dict:
-        if not os.path.exists(self.current_run_path):
+    @property
+    def _mgr_lazy(self) -> JobOutputManager:
+        """延迟返回 mgr（用 __placeholder__ 仅为了取 runs_dir 等路径常量）。
+
+        单一来源：所有路径计算走 _mgr.runs_dir，run.json 路径走
+        _ensure_run_dir_state → self.RUN_FILENAME。
+        """
+        if self._mgr is None:
+            # __placeholder__ 仅用于触发 JobOutputManager 路径解析
+            self._mgr = self._make_mgr("__placeholder__")
+        return self._mgr
+
+    # ---------- 内部：读写 runs/<run_id>/run.json ----------
+    def _ensure_run_dir_state(self, run_id: str) -> str:
+        """返回 runs/<run_id>/run.json 路径，必要时建目录。"""
+        mgr = self._mgr_lazy
+        run_dir = os.path.join(mgr.runs_dir, run_id)
+        os.makedirs(run_dir, exist_ok=True)
+        return os.path.join(run_dir, self.RUN_FILENAME)
+
+    def _load_run(self, run_id: str) -> dict:
+        path = self._ensure_run_dir_state(run_id)
+        if not os.path.exists(path):
             return {}
         try:
-            with open(self.current_run_path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return {}
 
-    def _save_current(self, state: dict) -> None:
-        os.makedirs(os.path.dirname(self.current_run_path), exist_ok=True)
-        # 不主动建 runs/<run_id>/ —— 留给子脚本第一次落盘时由
-        # JobOutputManager.ensure_run_dir() 建。这样 bind_or_create 后
-        # 若子脚本未实际写文件（dry-run / 异常退出），不会留空壳目录。
-        tmp = self.current_run_path + ".tmp"
+    def _save_run(self, run_id: str, state: dict) -> None:
+        path = self._ensure_run_dir_state(run_id)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, self.current_run_path)
+        os.replace(tmp, path)
 
     def _gen_run_id(self) -> str:
         """生成新 run_id。同秒内已存在则追加 _2/_3/... 后缀。"""
         base = time.strftime("%Y-%m-%d_%H%M%S")
         candidate = base
         n = 2
-        runs_dir = self._mgr.runs_dir
+        runs_dir = self._mgr_lazy.runs_dir
         os.makedirs(runs_dir, exist_ok=True)
         while os.path.isdir(os.path.join(runs_dir, candidate)):
             candidate = f"{base}_{n}"
             n += 1
         return candidate
 
-    # ---------- 关键入口 ----------
-    def bind_or_create(self, run_id: Optional[str] = None,
-                       job_id: Optional[str] = None,
-                       force: bool = False, verbose: bool = True) -> str:
-        """返回当前 run_id，自动维护 current_run.json。
+    # ---------- 旧接口（已废弃，调用即报错）----------
+    def bind_or_create(self, *args, **kwargs):
+        """已废弃（2026-07-30）。任何生产代码都不应再调用。
 
-        优先级：
-          1) 显式 run_id → 直接用并写入 current_run.json。
-          2) current_run.json 里有过未 finish 且目录里有真实产物的 run → 沿用。
-          3) 否则 → 新建一个 run_id（同秒冲突自动加 _N）。
-
-        verbose=True 时打印一行说明（[orchestrator] ...），方便排查
-        「为什么是这个 run_id」。
+        调用即抛 RuntimeError，强制改用 create_new_run() / bind_existing_run(run_id)。
         """
-        import sys as _sys
-        _log = (lambda m: print(f'[orchestrator] {m}', file=_sys.stderr)) if verbose else (lambda m: None)
+        raise RuntimeError(
+            "bind_or_create() 已废弃。"
+            "新任务请调 create_new_run()；继续任务请调 bind_existing_run(run_id)。"
+        )
 
-        # 1) 显式
-        if run_id:
-            # 如果 current_run.json 里已记录同一 run_id，保留 started_at
-            # —— 否则它会被 _now_str 覆盖，造成 run_id=11:37 / started_at=11:57 的错位。
-            cur = self._load_current()
-            existing_started_at = (
-                cur.get("started_at") if cur.get("run_id") == run_id else None
-            )
-            state = {
-                "run_id": run_id,
-                "job_name": self.job_name,
-                "job_id": job_id,
-                "started_at": existing_started_at or _now_str(),
-                "steps_done": cur.get("steps_done", []) if cur.get("run_id") == run_id else [],
-                "last_step": cur.get("last_step") if cur.get("run_id") == run_id else None,
-                "last_step_at": cur.get("last_step_at", _now_str()) if cur.get("run_id") == run_id else _now_str(),
-            }
-            self._save_current(state)
-            _log(f'显式 run_id={run_id}')
-            return run_id
-
-        # 2) 沿用
-        cur = self._load_current()
-        existing = cur.get("run_id")
-        if existing and not force:
-            # 沿用同一 run_id 的条件：
-            #   (a) current_run.json 未 finished
-            #   (b) runs/<run_id>/ 目录存在
-            #   (c) 目录里必须有「真实产物」（process/ 子目录或 .html 报告）
-            #       —— 否则视为空壳目录（run_orchestrator 或异常退出留下的），
-            #       必须新建而不是沿用，避免「bind_or_create 创空目录后沿用」的死循环。
-            finished = cur.get("finished", False)
-            run_dir = os.path.join(self._mgr.job_dir, "runs", existing)
-            if not finished and os.path.isdir(run_dir):
-                # 目录里必须有「真实产物」（process/ 子目录或 .html 报告），
-                # 否则视为空壳目录（run_orchestrator 或异常退出留下的），
-                # 必须新建而不是沿用，避免「bind_or_create 创空目录后沿用」的死循环。
-                has_real_output = (
-                    os.path.isdir(os.path.join(run_dir, "process"))
-                    or any(f.endswith(".html") for f in os.listdir(run_dir))
-                )
-                if has_real_output:
-                    _log(f'沿用活跃 run={existing}')
-                    return existing
-                else:
-                    _log(f'current_run={existing} 目录是空壳，跳过')
-            elif finished:
-                _log(f'current_run={existing} 已 finished')
-            else:
-                _log(f'current_run={existing} 目录不存在')
-            # 否则视为全新状态 → 走下面"新建"路径
-
-        # 3) 新建
+    # ---------- 关键入口 ----------
+    def create_new_run(self) -> str:
+        """无条件创建新 run。每次调用都返回全新 run_id。"""
         new_id = self._gen_run_id()
-        state = {
-            "run_id": new_id,
-            "job_name": self.job_name,
-            "job_id": job_id,
-            "started_at": _now_str(),
-            "steps_done": [],
-            "last_step": None,
-            "last_step_at": _now_str(),
-        }
-        self._save_current(state)
-        _log(f'新建 run={new_id}')
+        mgr = self._mgr_lazy
+        os.makedirs(os.path.join(mgr.runs_dir, new_id), exist_ok=True)
         return new_id
 
-    # ---------- 步骤标记 ----------
-    def mark_done(self, step: str, run_id: Optional[str] = None) -> None:
-        """标记某 step 完成。run_id 不传则默认当前活跃 run（来自 current_run.json）。"""
-        cur = self._load_current()
-        rid = run_id or cur.get("run_id")
-        if not rid:
-            return
-        cur["run_id"] = rid
+    def init_run_state(self, run_id: str) -> None:
+        """初始化 runs/<run_id>/run.json（confirmed=false）。"""
+        if not run_id:
+            raise ValueError("init_run_state 必须显式传 run_id")
+        cur = self._load_run(run_id)
+        cur["run_id"] = run_id
+        cur["encrypt_job_id"] = self.encrypt_job_id
+        cur["started_at"] = _now_str()
+        cur["confirmed"] = False
+        cur["user_confirmed_at"] = None
+        cur.setdefault("steps_done", [])
+        cur["finished"] = False
+        cur["finished_at"] = None
+        self._save_run(run_id, cur)
+
+    def bind_existing_run(self, run_id: Optional[str]) -> str:
+        """绑定到一个已存在的 run。run_id 必须显式传。
+
+        Args:
+            run_id: 已存在的 run 目录名（不含路径），如 "2026-07-30_103000"。
+
+        Returns:
+            str: 校验通过的 run_id（与入参相同；显式返回便于调用方链式赋值）。
+
+        Raises:
+            ValueError:        run_id 为空（缺少 --run-id）
+            FileNotFoundError: run_id 对应目录不存在
+            RuntimeError:      run_id 与当前 encrypt_job_id 不匹配
+
+        行为：
+          - 不读 current_run.json / latest_run.json
+          - 校验 run_dir 存在 + job_detail.json 里 encryptJobId 一致
+          - 校验失败抛异常；不创建新 run，不返回别的 run_id
+        """
+        if not run_id:
+            raise ValueError(
+                "缺少 --run-id。run_id 是数据边界，禁止自动选择历史 run。"
+                "新任务必须先调 create_new_run()，旧任务必须显式传 --run-id。"
+            )
+        run_dir = os.path.join(self._mgr_lazy.runs_dir, run_id)
+        if not os.path.isdir(run_dir):
+            raise FileNotFoundError(
+                f"run_id={run_id} 在岗位目录下不存在（{run_dir}）。"
+                "可能是别岗位的 run_id，或拼写错误。"
+            )
+        # 校验 encrypt_job_id 匹配
+        jd_path = os.path.join(run_dir, "process", "job_detail.json")
+        if os.path.exists(jd_path):
+            try:
+                with open(jd_path, "r", encoding="utf-8") as f:
+                    jd = json.load(f)
+                jd_eid = jd.get("encryptJobId") or jd.get("job_id") or ""
+                if jd_eid and self.encrypt_job_id and jd_eid != self.encrypt_job_id:
+                    raise RuntimeError(
+                        f"run_id={run_id} 的 encryptJobId={jd_eid} "
+                        f"与当前岗位的 encryptJobId={self.encrypt_job_id} 不匹配。"
+                    )
+            except (ValueError, RuntimeError):
+                raise
+            except Exception:
+                pass
+        return run_id
+
+    # ---------- 用户确认 ----------
+    def is_confirmed(self, run_id: str) -> bool:
+        """返回当前 run 的 confirmed 标志位。Step 2 守卫。"""
+        if not run_id:
+            return False
+        cur = self._load_run(run_id)
+        return cur.get("confirmed") is True
+
+    def confirm_run(self, run_id: str) -> None:
+        """把 confirmed 切到 true（用户回复『继续』后调用）。"""
+        if not run_id:
+            raise ValueError("confirm_run 必须显式传 run_id")
+        cur = self._load_run(run_id)
+        cur["run_id"] = run_id
+        cur["confirmed"] = True
+        cur["user_confirmed_at"] = _now_str()
+        self._save_run(run_id, cur)
+
+    # ---------- 步骤标记 / 结束 ----------
+    def mark_done(self, step: str, run_id: str) -> None:
+        """标记某 step 完成。run_id 必填。"""
+        if not run_id:
+            raise ValueError("mark_done 必须显式传 run_id")
+        cur = self._load_run(run_id)
+        cur["run_id"] = run_id
         cur.setdefault("steps_done", [])
         if step not in cur["steps_done"]:
             cur["steps_done"].append(step)
         cur["last_step"] = step
         cur["last_step_at"] = _now_str()
-        self._save_current(cur)
+        self._save_run(run_id, cur)
 
-    def finish(self) -> None:
-        """标记整个 run 结束。
-
-        2026-07-28 行为：仅写 `finished=true` 到 current_run.json，不动原作者的
-        collection_state.json schema（顶层 last_collected_at / last_total 等字段
-        由 recommend_download.py 的 job_resume_store 维护，避免冲突）。
-        """
-        cur = self._load_current()
-        rid = cur.get("run_id") or ""
-        if not rid:
-            return
+    def finish(self, run_id: str) -> None:
+        """标记整个 run 结束。run_id 必填。"""
+        if not run_id:
+            raise ValueError("finish 必须显式传 run_id")
+        cur = self._load_run(run_id)
+        cur["run_id"] = run_id
         cur["finished"] = True
         cur["finished_at"] = _now_str()
-        self._save_current(cur)
+        self._save_run(run_id, cur)

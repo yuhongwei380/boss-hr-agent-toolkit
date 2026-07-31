@@ -1,0 +1,13 @@
+{
+  "tool": "boss_jd",
+  "args": [
+    "<查询条件：encryptJobId | jobId | 岗位名>",
+    "--job-name",
+    "<岗位中文名>",
+    "--encrypt-job-id",
+    "<BOSS 的 encryptJobId，如 9a7759badfd95d350nFz3d-_F1NX>"
+  ],
+  "timeout": 600,
+  "check": true,
+  "_note": "Step 1 不传 --run-id → 自动 create_new_run()。Step 2~5 拿到 run_id 后再跑后续 spec。"
+}

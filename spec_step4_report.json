@@ -1,0 +1,14 @@
+{
+  "tool": "generate_html_report",
+  "args": [
+    "--job-name",
+    "<岗位中文名>",
+    "--encrypt-job-id",
+    "<BOSS 的 encryptJobId>",
+    "--run-id",
+    "<YYYY-MM-DD_HHMMSS>"
+  ],
+  "timeout": 300,
+  "check": false,
+  "_note": "需要 screening_results.json 已存在（先跑 score_resumes）。"
+}

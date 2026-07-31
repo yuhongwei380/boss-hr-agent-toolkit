@@ -1,0 +1,16 @@
+{
+  "tool": "auto_greet",
+  "args": [
+    "--job-name",
+    "<岗位中文名>",
+    "--encrypt-job-id",
+    "<BOSS 的 encryptJobId>",
+    "--run-id",
+    "<YYYY-MM-DD_HHMMSS>",
+    "--only-names",
+    "<候选人姓名，多个用英文逗号分隔>"
+  ],
+  "timeout": 600,
+  "check": false,
+  "_note": "可选 --only-names 做精准点名；不传则按 score≥70 推荐 tier 自动招呼，最多 10 人。"
+}

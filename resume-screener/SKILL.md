@@ -21,11 +21,13 @@ description: |
 ```bash
 # 正常评分（自动跳过历史已评人员）
 python score_resumes.py --input _llm_scores.json --output screening_results.json \
-  --job-name "<岗位名>" --run-id "$RUN_ID"
+  --job-name "<岗位名>" --encrypt-job-id "<id>" --run-id "$RUN_ID"
 # → ⏭ 跳过 12 位历史已评分候选人：张三、李四...
+# 缺 _llm_scores.json → SystemExit(26) + JSON 错误提示
 
 # 换了 JD 要全部重评
-python score_resumes.py ... --rescore
+python score_resumes.py --input _llm_scores.json --output screening_results.json \
+  --job-name "<岗位名>" --encrypt-job-id "<id>" --run-id "$RUN_ID" --rescore
 ```
 
 > 去重按 **geek_id** 而非姓名。BOSS 上「杨先生」「吕女士」这类匿名昵称会重名，
@@ -107,9 +109,9 @@ info = lookup("江南大学")
 
 ---
 
-## 完整工作流
+## 完整工作流（2026-07-31 v3：LLM 每评一份立即落盘）
 
-```bash
+```
 # 公共参数（5 步全流程同一个 encryptJobId）
 export ENCRYPT_ID="9a7759badfd95d350nFz3d-_F1NX"
 export JOB_NAME="线控底盘制动、转向工程师"
@@ -117,22 +119,35 @@ export RUN_ID="2026-07-29_150915"
 
 # 假设已有 runs/<run_id>/process/new_resumes.json（来自 boss-recommend-downloader）
 
-# 1. LLM agent 读 new_resumes.json + job_detail.json
-# 2. LLM agent 调 LLM API 逐份简历评 4 维度（exp / skill / proj / major）
-# 3. 写 _llm_scores.json 到 runs/<run_id>/process/_llm_scores.json
-#    - 推荐填 `school_name`（纯校名）、`geek_id` 和 `job_id`：
-#        * `school_name` 让 school_tier 准确查档；不填也能跑，脚本兜底从 `school` 拆
-#        * `geek_id` 让评分去重按 ID 而非姓名（避免"杨先生"重名误杀）
-#        * `job_id` 是 BOSS 的 encryptJobId（从 new_resumes[i]._meta.encrypt_job_id 取），
-#          让脚本在 resumes_master.json 多 prefix 时精准定位；不填会走暴力扫描兜底
-#    - 不填也能跑（脚本兼容），但去重和校准可能不精确
-# 4. 跑脚本收尾
+# 0. 简历净化层 —— 把 new_resumes.json 拆成每人一份（2026-07-31 v2）
+#    输入：new_resumes.json（动辄几 MB，含 _meta/active_status/空字段等噪声）
+#    输出：runs/<run_id>/process/scoring/
+#      ├── manifest.json                     # 候选人清单 + status（pending/scored/missing）
+#      ├── inputs/candidate_<geek_id>.json   # 净化输入（LLM 读这里）
+#      ├── outputs/candidate_<geek_id>.json  # LLM 评分落盘点（每评一个立即写一份）
+#      └── _skipped.json                     # 被跳过的简历
+#    关键：不改变评分标准，只是把「一坨 JSON」拆成「每人一文件」
+python scripts/prepare_scoring_inputs.py \
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID"
+
+# 1. LLM agent 读 scoring/manifest.json（拿到候选人清单 + status）
+# 2. 对 status="pending" 的候选人循环：
+#      a) 读 scoring/inputs/candidate_<geek_id>.json（一份精简简历）
+#      b) 调 LLM API 评 4 维度（exp / skill / proj / major），产出评分 object
+#      c) **立即落盘**到 scoring/outputs/candidate_<geek_id>.json（单个评分 object）
+#      d) 中途崩了下次只需重跑循环里 status="pending" 的那批
+# 3. 跑 collect_llm_scores.py：把 outputs/ 合并成 _llm_scores.json（幂等可重跑）
+#    - 回写 manifest.status 为 scored / missing / invalid
+#    - 不读简历、不做评分，只做文件收集 + 数组拼接
+python scripts/collect_llm_scores.py \
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID"
+
+# 4. 跑 score_resumes.py 收尾（不读 outputs/，只接 _llm_scores.json）
+#    - 用 school_tier 查 edu
+#    - 加权 + total + tier 判定
+#    - 跨 run 去重（state/scored_state.json）
 python score_resumes.py \
-  --input runs/<run_id>/process/_llm_scores.json \
-  --output runs/<run_id>/process/screening_results.json \
-  --job-name "$JOB_NAME" \
-  --encrypt-job-id "$ENCRYPT_ID" \
-  --run-id <run_id>
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID"
 
 # Step 4: 生成 HTML 报告
 python html-report/scripts/generate_html_report.py \
@@ -140,6 +155,37 @@ python html-report/scripts/generate_html_report.py \
   --encrypt-job-id "$ENCRYPT_ID" \
   --run-id <run_id>
 ```
+
+### 关键设计点
+
+1. **断点续评**：LLM agent 任何时候崩了，下次只需读 `manifest.json` 挑 `status="pending"` 的继续评，已评的 `scored` 直接跳过。
+2. **不污染评分标准**：`score_resumes.py` 的入参 schema 完全不变（仍是 `_llm_scores.json` 数组）；collect_llm_scores.py 只做文件收集 + 拼接，不做任何评分/打分/校准。
+3. **校验兜底**：`collect_llm_scores.py` 校验每个 outputs 文件的 schema（必含 `name` / `dims.{exp,skill,proj,major}` 且 0-100），不合法的标 `status="invalid"` 不入数组，错误信息打印在 stdout。
+4. **geek_id / job_id 兜底**：如果 LLM 在 outputs 文件里漏写 `geek_id`，collect_llm_scores.py 从 manifest 自动补（避免 score_resumes.py 拒绝评分）。
+
+### 净化层字段规则（白名单 + 必保留）
+
+`prepare_scoring_inputs.py` 从 `new_resumes.json[i]` 净化出 `<index>_<name>.json`，规则：
+
+**只删**：
+- `ok` / `age` / `expectation` / `active_status`（接口包装 / 平台状态 / 与评分无关）
+- `_meta` 整层（包装字段；`encrypt_geek_id` / `encrypt_job_id` 抽到顶层）
+- `work_experience[].performance` / `work_experience[].keywords` / `work_experience[].department`（历年空 / BOSS 内部字段）
+- `project_experience[]` 中的全空字段（保留 `name` 作为骨架）
+- 空字段（`null` / `""`）在 work_experience / project_experience 内做最小保留（让 LLM 看到"无技能"是证据，不是字段缺失）
+
+**必保留**（评分主体证据）：
+- `name` / `degree` / `work_years`（脚本硬门槛过滤依据）
+- `work_experience[].company` / `position` / `start` / `end` / `duration` / `responsibility`
+- `project_experience[].name` / `role` / `start` / `end` / `duration` / `description` / `achievement`
+- `education[]`（school_tier 查表 + 专业匹配）
+- `certifications[]`（英语 / 计算机证书是辅助证据）
+- `skills`（JD 关键词命中证据；空串也保留）
+- 顶层 `geek_id` / `job_id`（从 `_meta` 抽出，供 score_resumes.py 去重）
+
+**额外**：
+- 顶层加 `__meta__` 块标 source / source_index / generated_at，方便反查
+- 写 `_manifest.json`（文件清单 + 字节数 + geek_id）和 `_skipped.json`（被跳过的 ok=false / 缺 name 的简历）
 
 ## 工作区路径约定（新设计 · 2026-07-29+）
 
@@ -155,7 +201,6 @@ python html-report/scripts/generate_html_report.py \
     │   ├── resumes_master.json             # 累计成功简历（含 _meta）
     │   ├── collection_state.json
     │   ├── scored_state.json
-    │   └── current_run.json
     └── runs/
         └── <run_id>/                       # 一次筛选任务
             ├── <run_id>_screening_report.html
@@ -163,7 +208,12 @@ python html-report/scripts/generate_html_report.py \
                 ├── job_detail.json              ← Step 1: boss_jd.py 输出
                 ├── batch_1_ids.json / recommend_geek_ids.json  ← Step 2: list 输出
                 ├── new_resumes.json             ← Step 2: recommend_download.py 输出
-                ├── _llm_scores.json             ← Step 3: LLM agent 评分
+                ├── scoring/                     ← Step 3: prepare_scoring_inputs.py 输出
+                │   ├── manifest.json             # 候选人清单 + status（pending/scored/missing）
+                │   ├── _skipped.json             # 被跳过的简历
+                │   ├── inputs/candidate_<geek_id>.json   # LLM 读这里
+                │   └── outputs/candidate_<geek_id>.json  # LLM 落盘点（每评一个立即写一份）
+                ├── _llm_scores.json             ← Step 3: collect_llm_scores.py 合并产物
                 ├── screening_results.json       ← Step 3: score_resumes.py 输出
                 ├── failed_resumes.json
                 └── greet_log.json               ← Step 5: auto_greet.py 输出

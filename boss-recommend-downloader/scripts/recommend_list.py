@@ -40,7 +40,7 @@ def get_recommend_candidates(job_name='车架工程师', max_candidates=None,
         max_candidates:  最大获取数量（None 为全部，与分批互斥）
         batch_size:      每批收集人数（分批模式）
         batch_number:    第几批，从 1 开始（分批模式）
-        run_id:          显式 run_id（一般不传，自动跟走 current_run.json）
+        run_id:          本次 run ID（必填；数据边界）
         encrypt_job_id:  BOSS encryptJobId（推荐；env BOSS_HR_ENCRYPT_JOB_ID 可兑底）
     """
     # 2026-07-28 修复：跟走 RunOrchestrator，让 list 落到跟前面 step 同一 run_id，
@@ -50,7 +50,23 @@ def get_recommend_candidates(job_name='车架工程师', max_candidates=None,
     if not encrypt_job_id:
         raise ValueError("缺少 encrypt_job_id。\n  传 --encrypt-job-id，或设置 env BOSS_HR_ENCRYPT_JOB_ID")
     orch = RunOrchestrator(job_name, encrypt_job_id=encrypt_job_id)
-    run_id = orch.bind_or_create(run_id)
+    # 2026-07-30 重构：run_id 是数据边界，必须显式传。
+    # --run-id 已设为 required=True，argparse 会保证 run_id 非空。
+    # bind_existing_run 校验 run_dir 存在 + encrypt_job_id 匹配，不通过报错。
+    run_id = orch.bind_existing_run(run_id)
+    # 用户确认守卫（2026-07-30）：未确认直接 SystemExit(20)
+    if not orch.is_confirmed(run_id):
+        print(json.dumps({
+            "status": "blocked",
+            "exit_code": 20,
+            "run_id": run_id,
+            "message": (f"用户尚未确认，禁止执行 Step 2。"
+                         "Step 1 完成后必须等用户在 BOSS 调整完筛选条件，"
+                         "然后调 shared/confirm_run.py --run-id {run_id} "
+                         "--encrypt-job-id {encrypt_job_id} --job-name {job_name} "
+                         "把 run.json.confirmed 切到 true。"),
+        }, ensure_ascii=False))
+        raise SystemExit(20)
     output = JobOutputManager(job_name, encrypt_job_id=encrypt_job_id, run_id=run_id)
 
     # 分批状态文件
@@ -97,11 +113,18 @@ def get_recommend_candidates(job_name='车架工程师', max_candidates=None,
             print('连接已有推荐牛人页面（不刷新）...')
             time.sleep(3)
         else:
-            # batch 1 或普通模式：打开页面
-            print('打开推荐牛人页面...')
-            pg.goto('https://www.zhipin.com/web/chat/recommend',
-                    wait_until='networkidle', timeout=60000)
-            time.sleep(5)
+            # batch 1 / 普通模式：先检查当前页面 URL，避免覆盖用户在 BOSS 调好的筛选条件
+            current_url = (pg.url or '')
+            if 'zhipin.com/web/chat/recommend' in current_url:
+                # 当前已在推荐牛人页面 → 复用用户在 BOSS 调整好的筛选条件
+                print(f'当前已在推荐牛人页面（{current_url}），不刷新直接复用用户的筛选条件...')
+                time.sleep(3)
+            else:
+                # 不在 → 才 goto（保留"冷启动"能力）
+                print('打开推荐牛人页面...')
+                pg.goto('https://www.zhipin.com/web/chat/recommend',
+                        wait_until='networkidle', timeout=60000)
+                time.sleep(5)
 
         # 等待 iframe 出现（最多 15 秒）
         iframe = None
@@ -208,8 +231,8 @@ if __name__ == '__main__':
     parser.add_argument('--max', type=int, default=None, help='最大获取数量（普通模式）')
     parser.add_argument('--batch-size', type=int, default=None, help='每批收集人数（分批模式）')
     parser.add_argument('--batch', type=int, default=None, help='第几批，从1开始（分批模式）')
-    parser.add_argument('--run-id', default=None,
-                        help='显式指定 run_id（一般不传，自动跟走 current_run.json）')
+    parser.add_argument('--run-id', required=True,
+                        help='【必填】run_id 是数据边界。新任务先跑 boss_jd.py 创建 run；不传直接报错。')
 
     args = parser.parse_args()
 

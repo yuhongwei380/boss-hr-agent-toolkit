@@ -363,7 +363,7 @@ def main():
     ap.add_argument("--job-name", default=None, help="岗位名（jobs.json metadata）")
     ap.add_argument("--encrypt-job-id", default=None,
                     help="BOSS encryptJobId（推荐；新设计目录名依此定位；亦可走 env BOSS_HR_ENCRYPT_JOB_ID）")
-    ap.add_argument("--run-id", default=None, help="本次 run ID（默认走 orchestrator）")
+    ap.add_argument("--run-id", required=True, help="【必填】run_id 是数据边界。新任务先跑 boss_jd.py 创建 run；不传直接报错。")
     args = ap.parse_args()
 
     # 默认走 orchestrator，确保 HTML 报告落到跟前面 Step 同一 run 目录
@@ -390,7 +390,8 @@ def main():
         raise ValueError("缺少 encrypt_job_id。\n  传 --encrypt-job-id，或设置 env BOSS_HR_ENCRYPT_JOB_ID")
 
     orch = RunOrchestrator(job_name, encrypt_job_id=encrypt_job_id)
-    run_id = orch.bind_or_create(args.run_id)
+    # 2026-07-30 重构：run_id 是数据边界，必须显式传（--run-id required=True）
+    run_id = orch.bind_existing_run(args.run_id)
     out = JobOutputManager(job_name, encrypt_job_id=encrypt_job_id, run_id=run_id)
 
     if not args.input:
@@ -399,6 +400,19 @@ def main():
     if not args.output:
         args.output = str(out.report_path)
         print(f'[orchestrator] --output 默认: {args.output}')
+
+    # 2026-07-30 数据边界：当前 run 缺 screening_results.json → 直接报错，
+    # 绝不读其他 run / 桌面 / state/ 下的旧报告。
+    if not os.path.exists(args.input):
+        print(json.dumps({
+            "status": "blocked",
+            "exit_code": 27,
+            "run_id": run_id,
+            "message": (f"当前 run={run_id} 缺少评分结果 {args.input}。"
+                         "HTML 报告脚本只读当前 run 的 process/，不会跨 run 或扫桌面找旧文件。"
+                         "请先跑 Step 3 (score_resumes.py) 生成 screening_results.json。"),
+        }, ensure_ascii=False))
+        raise SystemExit(27)
 
     data = json.load(open(args.input, encoding="utf-8"))
     html = render(data)

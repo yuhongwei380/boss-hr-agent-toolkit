@@ -1,0 +1,14 @@
+{
+  "tool": "collect_llm_scores",
+  "args": [
+    "--job-name",
+    "<岗位中文名>",
+    "--encrypt-job-id",
+    "<BOSS 的 encryptJobId>",
+    "--run-id",
+    "<YYYY-MM-DD_HHMMSS>"
+  ],
+  "timeout": 60,
+  "check": true,
+  "_note": "LLM 逐份评完后跑这个合并。scoring/outputs/candidate_*.json → _llm_scores.json。"
+}

@@ -87,8 +87,12 @@ class JobOutputManager:
         Args:
             job_name:        岗位名称（人类可读）。可空 —— 只用 encrypt_job_id 也能跑
             encrypt_job_id:  BOSS 的 encryptJobId（推荐）。优先用于目录命名
-            run_id:          本次 run 的 ID。省略时跟走 state/current_run.json
+            run_id:          本次 run 的 ID。**必填**（2026-07-30 重构：run_id 是数据边界，
+                            禁止再从 state/current_run.json 自动沿用）
             lazy:            默认 False（创建 state/ 和 runs/）
+
+        Raises:
+            ValueError: run_id 为空（必须显式传 run_id）
         """
         from job_registry import JobRegistry, resolve_job_dir
         self.encrypt_job_id = encrypt_job_id
@@ -115,15 +119,22 @@ class JobOutputManager:
         self.state_dir = os.path.join(self.job_dir, 'state')
         self.runs_dir = os.path.join(self.job_dir, 'runs')
 
-        # run_id 解析：显式 > current_run.json 沿用 > 新建
+        # run_id 解析（2026-07-30 重构）：run_id 是数据边界，必须显式传
+        # —— 但 lazy=True 时只读路径（state_dir / runs_dir），不读 run_dir，
+        # 这种情况下允许不传 run_id（JobResumeStore 跨 run 去重时使用）。
+        if not run_id and not lazy:
+            raise ValueError(
+                "JobOutputManager.run_id 是必填参数（2026-07-30 重构）。"
+                "新任务先调 create_new_run() 拿到 run_id；继续任务显式传 run_id。"
+                "禁止从 state/current_run.json 自动沿用 —— 那是智能体偷懒入口。"
+            )
+        self.run_id = run_id
         if run_id:
-            self.run_id = run_id
+            self.run_dir = os.path.join(self.runs_dir, self.run_id)
+            self.process_dir = os.path.join(self.run_dir, 'process')
         else:
-            self.run_id = self._resolve_run_id_from_state() or _make_run_id()
-            # 同步写回 current_run.json 让后续脚本继续沿用
-            self._persist_current_run_id()
-        self.run_dir = os.path.join(self.runs_dir, self.run_id)
-        self.process_dir = os.path.join(self.run_dir, 'process')
+            self.run_dir = None
+            self.process_dir = None
 
         # 自动创建（默认）
         if not lazy:
@@ -131,48 +142,8 @@ class JobOutputManager:
             os.makedirs(self.runs_dir, exist_ok=True)
             self.ensure_run_dir()
 
-    # ---------- run_id 解析（2026-07-28 修复：跟走 current_run.json） ----------
-    def _resolve_run_id_from_state(self) -> Optional[str]:
-        """从 state/current_run.json 读取当前活跃 run_id（未 finished 才返回）。"""
-        cur_path = os.path.join(self.state_dir, 'current_run.json')
-        if not os.path.exists(cur_path):
-            return None
-        try:
-            with open(cur_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except Exception:
-            return None
-        rid = data.get('run_id')
-        if not rid:
-            return None
-        if data.get('finished', False):
-            return None
-        return rid
-
-    def _persist_current_run_id(self) -> None:
-        """把当前 self.run_id 写入 current_run.json，让后续脚本继续沿用。"""
-        cur_path = os.path.join(self.state_dir, 'current_run.json')
-        os.makedirs(os.path.dirname(cur_path), exist_ok=True)
-        state = {}
-        if os.path.exists(cur_path):
-            try:
-                with open(cur_path, 'r', encoding='utf-8') as f:
-                    state = json.load(f)
-            except Exception:
-                state = {}
-        # 同 run_id 直接沿用，不重置 steps_done
-        if state.get('run_id') != self.run_id:
-            state = {
-                'run_id': self.run_id,
-                'job_name': self.job_name,
-                'job_id': state.get('job_id'),
-                'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'steps_done': [],
-                'last_step': None,
-                'last_step_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            }
-        with open(cur_path, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+    # 注：2026-07-30 之前的方法 _resolve_run_id_from_state / _persist_current_run_id
+    #     已被彻底删除 —— state/current_run.json 不再读写。
 
     def ensure_run_dir(self) -> None:
         """显式创建本次 run 的 run_dir / process_dir（懒模式下的兜底）。"""

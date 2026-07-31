@@ -25,6 +25,29 @@ type: tool
 
 ---
 
+## 🚦 用户确认门（2026-07-30 · 必读）
+
+**本 Skill 两个脚本都会先做 `is_confirmed(run_id)` 检查。**
+
+```
+boss_jd.py 完成 → init_run_state() 写 runs/<run_id>/run.json (confirmed=false)
+   ↓ 智能体停下，等用户在 BOSS 调整筛选条件
+用户回复『继续』
+   ↓ 智能体执行
+python shared/confirm_run.py --job-name "..." --encrypt-job-id "..." --run-id "..."
+   ↓ confirmed=true
+本 Skill 脚本开头 is_confirmed(run_id) 通过
+   ↓
+正常执行 Step 2
+```
+
+**禁止：**
+- ❌ 直接跑本 Skill 脚本，期望它"如果未确认就跳过"
+- ❌ 加 `--skip-confirm` 或类似绕过参数（脚本没有，意图也不会被允许）
+- ❌ 用其它方式手动改 `run.json` 的 `confirmed` 字段（属于污染审计日志）
+
+---
+
 ## 流程总览
 
 ```
@@ -72,16 +95,19 @@ type: tool
 # 普通模式：获取所有候选人
 python scripts/recommend_list.py \
   --job-name "线控底盘制动、转向工程师" \
-  --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX"
+  --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX" \
+  --run-id "$RUN_ID"
 
 # 分批模式：每批25人，不刷新页面（顺序固定）
 python scripts/recommend_list.py \
   --job-name "线控底盘制动、转向工程师" \
   --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX" \
+  --run-id "$RUN_ID" \
   --batch-size 25 --batch 1
 python scripts/recommend_list.py \
   --job-name "线控底盘制动、转向工程师" \
   --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX" \
+  --run-id "$RUN_ID" \
   --batch-size 25 --batch 2
 # batch 2+ 会连接已有页面继续滚动，不重新加载
 ```
@@ -117,18 +143,21 @@ python scripts/recommend_list.py \
 # 普通模式：下载全部
 python scripts/recommend_download.py \
   --job-name "线控底盘制动、转向工程师" \
-  --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX"
+  --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX" \
+  --run-id "$RUN_ID"
 
 # 分批模式：下载第1批
 python scripts/recommend_download.py \
   --job-name "线控底盘制动、转向工程师" \
   --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX" \
+  --run-id "$RUN_ID" \
   --batch 1
 
 # 限制数量
 python scripts/recommend_download.py \
   --job-name "线控底盘制动、转向工程师" \
   --encrypt-job-id "9a7759badfd95d350nFz3d-_F1NX" \
+  --run-id "$RUN_ID" \
   --batch 1 --max 10
 ```
 
@@ -212,25 +241,26 @@ patchright 在**真实 Edge 浏览器**中执行 `fetch()` 请求。从 BOSS 服
 ## 📝 完整分批工作流示例
 
 ```bash
-# 公共参数（5 步全流程同一个 encryptJobId）
+# 公共参数（5 步全流程同一个 encryptJobId + 同一个 run_id）
 export ENCRYPT_ID="9a7759badfd95d350nFz3d-_F1NX"
 export JOB_NAME="线控底盘制动、转向工程师"
+export RUN_ID="<Step 1 拿到的 run_id>"
 
 # Batch 1：收集25人 → 下载 → 评分
 python scripts/recommend_list.py \
-  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" \
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID" \
   --batch-size 25 --batch 1
 python scripts/recommend_download.py \
-  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" \
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID" \
   --batch 1
 # → AI 读取 batch_1_resumes.json 进行评分
 
 # Batch 2：继续滚动（不刷新页面）→ 下载 → 评分
 python scripts/recommend_list.py \
-  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" \
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID" \
   --batch-size 25 --batch 2
 python scripts/recommend_download.py \
-  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" \
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID" \
   --batch 2
 # → AI 读取 batch_2_resumes.json 进行评分
 

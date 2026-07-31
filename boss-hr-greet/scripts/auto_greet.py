@@ -54,26 +54,24 @@ def log(out, msg):
         f.write(line + '\n')
 
 
-def load_high_score_candidates(job_dir, score_threshold, only_names=None):
-    """从最新 run 的 screening_results.json 读高分候选 + 从 candidate_pool.json 补全 geek_id
+def load_high_score_candidates(job_dir, run_id, score_threshold, only_names=None):
+    """从指定 run 的 process/screening_results.json 读高分候选。
+
+    2026-07-30 重构：
+      - run_id 必填（数据边界）
+      - 不再扫 runs/*/ 找"最新" —— 那是智能体偷懒入口
+      - 找不到 screening_results.json → 高分列表为空，由调用方决定
 
     --only-names 模式：如果名单里的人在 screening_results 里找不到，会回退到
-    candidate_pool.json + geek_positions.json 兜底（仅用于打招呼定位，不要求评分）
+    state/candidate_pool.json 兜底（仅用于打招呼定位，不要求评分）。
     """
-    runs_dir = os.path.join(job_dir, 'runs')
-    source_run = None
+    if not run_id:
+        raise ValueError("load_high_score_candidates 必须显式传 run_id，禁止扫 runs/*/")
+    run_dir = os.path.join(job_dir, 'runs', run_id)
+    screen_path = os.path.join(run_dir, 'process', 'screening_results.json')
 
     high = []
-    if os.path.isdir(runs_dir):
-        runs = sorted(os.listdir(runs_dir), reverse=True)
-        for r in runs:
-            sp = os.path.join(runs_dir, r, 'process', 'screening_results.json')
-            if os.path.exists(sp):
-                screen_path = sp
-                source_run = r
-                break
-
-    if source_run:
+    if os.path.exists(screen_path):
         screen = json.load(open(screen_path, encoding='utf-8'))
         cands = screen.get('candidates') or []
         for c in cands:
@@ -119,8 +117,6 @@ def load_high_score_candidates(job_dir, score_threshold, only_names=None):
                             'encrypt_geek_id': item.get('encrypt_geek_id', ''),
                             'from_pool_only': True,
                         })
-                if not source_run:
-                    source_run = 'pool-only (--only-names mode, no screening match)'
         print(f'按 --only-names 过滤：{before} → {len(high)} 人')
 
     # 从 candidate_pool.json 反查 encrypt_geek_id（给高分列表里没 geek_id 的补）
@@ -137,7 +133,7 @@ def load_high_score_candidates(job_dir, score_threshold, only_names=None):
         if not h.get('encrypt_geek_id'):
             h['encrypt_geek_id'] = name_to_id.get(h['name'].strip(), '')
 
-    return high, source_run
+    return high
 
 
 def load_positions(job_dir):
@@ -559,13 +555,11 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
         raise ValueError("缺少 encrypt_job_id。\n  传 --encrypt-job-id，或设置 env BOSS_HR_ENCRYPT_JOB_ID")
     output = JobOutputManager(job_name, encrypt_job_id=encrypt_job_id, run_id=run_id, lazy=True)
 
-    # ★ 跨 Step run_id 编排：跟走 state/current_run.json
-    #   1) --run-id 显式 → 用它
-    #   2) 否则跟走当前活跃 run（boss_jd / score_resumes 跑完会留下 current_run.json）
-    #   3) 都没有 → 新建（独立场景：老用户直接调 auto_greet 招呼）
+    # ★ 2026-07-30 重构：run_id 是数据边界，--run-id 必填。
+    #   不再"扫 runs/*/ 找最新" —— 那是智能体偷懒入口。
     from run_orchestrator import RunOrchestrator
     orch = RunOrchestrator(job_name, encrypt_job_id=encrypt_job_id)
-    run_id = orch.bind_or_create(run_id)
+    run_id = orch.bind_existing_run(run_id)
     output.run_id = run_id
 
     # 异常护栏：脚本若异常退出且没写 greet_log.json，自动清 run_dir
@@ -584,7 +578,7 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
     log(output, f'岗位：{job_name} | 阈值：{score_threshold} | 上限：{max_count} | dry_run={dry_run}')
     log(output, f'模式：scan_only={scan_only} skip_scan={skip_scan}')
 
-    high, source_run = load_high_score_candidates(output.job_dir, score_threshold, only_names)
+    high = load_high_score_candidates(output.job_dir, run_id, score_threshold, only_names)
     if not high and not only_names:
         # 默认模式（按 score 筛）无结果才退出
         log(output, '没有高分候选人，结束')
@@ -596,7 +590,6 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
         high = [{'name': n.strip(), 'score': 0, 'tier': 'manual',
                  'school': '', 'work_years': '', 'current_role': '',
                  'from_pool_only': True, 'from_stub': True} for n in only_names]
-        source_run = source_run or 'stub-only (not found in screening/pool)'
 
     # --only-names 模式下保留用户给定顺序，否则按 score 降序
     if not only_names:
@@ -605,7 +598,7 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
         log(output, f'高分 {len(high)} > max_count {max_count}，取前 {max_count}')
         high = high[:max_count]
 
-    log(output, f'目标 {len(high)} 人（基于 {source_run or "仅 --only-names"}）')
+    log(output, f'目标 {len(high)} 人（基于 run_id={run_id}）')
     for i, h in enumerate(high, 1):
         log(output, f'  #{i}: {h["name"]:8s} score={h["score"]:.1f} tier={h["tier"]:4s}')
 
@@ -693,7 +686,6 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
                         'job': job_name,
                         'run_id': run_id,
                         'score_threshold': score_threshold,
-                        'source_run_id': source_run,
                         'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         'mode': 'scan_and_greet_reverse',
@@ -727,7 +719,6 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
             'job': job_name,
             'run_id': run_id,
             'score_threshold': score_threshold,
-            'source_run_id': source_run,
             'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'mode': 'scan_and_greet_reverse',
@@ -807,8 +798,8 @@ if __name__ == '__main__':
     parser.add_argument('--threshold', type=float, default=70.0,
                         help='score 阈值（>= 阈值的候选人会被招呼；与 --only-names 互斥，--only-names 优先）')
     parser.add_argument('--max', type=int, default=10)
-    parser.add_argument('--run-id', default=None,
-                        help='本次 run ID（不传则自动生成 YYYY-MM-DD_HHMMSS）')
+    parser.add_argument('--run-id', required=True,
+                        help='【必填】run_id 是数据边界。新任务先跑 boss_jd.py 创建 run；不传直接报错。')
     parser.add_argument('--only-names', default=None,
                         help='逗号分隔，直接指定要打招呼的名字（精准点名模式）')
     parser.add_argument('--dry-run', action='store_true',

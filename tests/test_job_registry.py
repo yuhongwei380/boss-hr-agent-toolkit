@@ -53,6 +53,7 @@ def test_output_manager_uses_encrypt_job_id_as_dir():
         om = output_manager.JobOutputManager(
             job_name="线控底盘制动、转向工程师",
             encrypt_job_id="9a7759badfd95d350nFz3d-_F1NX",
+            run_id="2026-07-30_103000",  # 2026-07-30 重构：run_id 必填
         )
         # 目录名是 ID 不是中文
         assert om.job_dir.endswith("9a7759badfd95d350nFz3d-_F1NX")
@@ -66,12 +67,16 @@ def test_output_manager_uses_encrypt_job_id_as_dir():
 
 
 def test_output_manager_compat_legacy_job_name_only():
-    """旧调用（仅 job_name）仍能工作 —— 用中文名作目录"""
+    """旧调用（仅 job_name）仍能工作 —— 用中文名作目录。
+
+    2026-07-30 重构：run_id 必填。这里传 placeholder run_id 仅用于初始化
+    （不影响路径定位，测试只验证路径和 metadata）。
+    """
     with tempfile.TemporaryDirectory() as t:
         output_manager.OUTPUT_ROOT = t
         job_registry.JOBS_REGISTRY_PATH = os.path.join(t, "jobs.json")
 
-        om = output_manager.JobOutputManager(job_name="某岗位")
+        om = output_manager.JobOutputManager(job_name="某岗位", run_id="placeholder")
         assert om.job_dir.endswith("某岗位")
         assert om.encrypt_job_id is None  # 旧调用没传 ID
 
@@ -82,7 +87,10 @@ def test_output_manager_encrypt_job_id_only():
         output_manager.OUTPUT_ROOT = t
         job_registry.JOBS_REGISTRY_PATH = os.path.join(t, "jobs.json")
 
-        om = output_manager.JobOutputManager(encrypt_job_id="ZZZ-123")
+        om = output_manager.JobOutputManager(
+            encrypt_job_id="ZZZ-123",
+            run_id="placeholder",
+        )
         assert om.job_dir.endswith("ZZZ-123")
         # 没登记过，job_name 退化用 ID
         assert om.job_name == "ZZZ-123"

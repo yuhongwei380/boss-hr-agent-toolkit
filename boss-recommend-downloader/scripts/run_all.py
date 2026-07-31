@@ -41,20 +41,6 @@ def main():
         print('   export PYTHONIOENCODING=utf-8')
         print()
 
-    # 检查配置文件
-    config_path = os.path.expanduser('~/.boss-agent/config.json')
-    if os.path.exists(config_path):
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        if config.get('low_risk_mode', True):
-            print('️  警告：low_risk_mode 未关闭，简历获取可能失败')
-            print('   请在 ~/.boss-agent/config.json 中添加 "low_risk_mode": false')
-            print()
-    else:
-        print('⚠️  警告：未找到配置文件 ~/.boss-agent/config.json')
-        print('   请创建并添加 "low_risk_mode": false')
-        print()
-
     # Step 1: 获取候选人列表
     print('【Step 1】获取候选人列表...')
     print('-' * 40)

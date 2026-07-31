@@ -98,7 +98,21 @@ def download_resumes(job_name, batch_number=None, max_count=None,
     if not encrypt_job_id:
         raise ValueError("缺少 encrypt_job_id。\n  传 --encrypt-job-id，或设置 env BOSS_HR_ENCRYPT_JOB_ID")
     orch = RunOrchestrator(job_name, encrypt_job_id=encrypt_job_id)
-    run_id = orch.bind_or_create(run_id)
+    # 2026-07-30 重构：run_id 是数据边界，必须显式传（--run-id required=True）
+    run_id = orch.bind_existing_run(run_id)
+    # 用户确认守卫（2026-07-30）：未确认直接 SystemExit(20)
+    if not orch.is_confirmed(run_id):
+        print(json.dumps({
+            "status": "blocked",
+            "exit_code": 20,
+            "run_id": run_id,
+            "message": (f"用户尚未确认，禁止执行 Step 2。"
+                         "Step 1 完成后必须等用户在 BOSS 调整完筛选条件，"
+                         "然后调 shared/confirm_run.py --run-id {run_id} "
+                         "--encrypt-job-id {encrypt_job_id} --job-name {job_name} "
+                         "把 run.json.confirmed 切到 true。"),
+        }, ensure_ascii=False))
+        raise SystemExit(20)
 
     output = JobOutputManager(job_name, encrypt_job_id=encrypt_job_id, run_id=run_id)
     output.ensure_run_dir()
@@ -321,7 +335,8 @@ if __name__ == '__main__':
     parser.add_argument('--pause-every', type=int, default=5)
     parser.add_argument('--pause-min', type=int, default=60)
     parser.add_argument('--pause-max', type=int, default=120)
-    parser.add_argument('--run-id', default=None)
+    parser.add_argument('--run-id', required=True,
+                        help='【必填】run_id 是数据边界。新任务先跑 boss_jd.py 创建 run；不传直接报错。')
     parser.add_argument('--from-pool', action='store_true',
                         help='从 state/candidate_pool.json 取未尝试的（跨 run 通杀）')
 

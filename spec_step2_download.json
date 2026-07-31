@@ -1,0 +1,24 @@
+{
+  "tool": "recommend_download",
+  "args": [
+    "--job-name",
+    "<岗位中文名>",
+    "--encrypt-job-id",
+    "<BOSS 的 encryptJobId>",
+    "--run-id",
+    "<YYYY-MM-DD_HHMMSS>",
+    "--batch",
+    "1",
+    "--max",
+    "5",
+    "--pause-every",
+    "5",
+    "--pause-min",
+    "60",
+    "--pause-max",
+    "120"
+  ],
+  "timeout": 3600,
+  "check": false,
+  "_note": "--max 5 是默认；分多批时用 --batch 2/3/...。"
+}

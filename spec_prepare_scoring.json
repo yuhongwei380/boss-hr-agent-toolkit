@@ -1,0 +1,14 @@
+{
+  "tool": "prepare_scoring_inputs",
+  "args": [
+    "--job-name",
+    "<岗位中文名>",
+    "--encrypt-job-id",
+    "<BOSS 的 encryptJobId>",
+    "--run-id",
+    "<YYYY-MM-DD_HHMMSS>"
+  ],
+  "timeout": 60,
+  "check": true,
+  "_note": "把 new_resumes.json 拆成 scoring/{inputs,outputs}/ + manifest.json。"
+}

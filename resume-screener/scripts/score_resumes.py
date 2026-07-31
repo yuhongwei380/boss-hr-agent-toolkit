@@ -261,7 +261,7 @@ def main():
     ap.add_argument("--encrypt-job-id", default=None,
                     help="BOSS encryptJobId（推荐；新设计目录名依此定位；亦可走 env BOSS_HR_ENCRYPT_JOB_ID）")
     ap.add_argument("--job-info", default=None, help="JD 完整信息 JSON 字符串（可选）")
-    ap.add_argument("--run-id", default=None, help="本次 run ID（默认走 orchestrator；写入 meta，方便与 HTML 报告关联）")
+    ap.add_argument("--run-id", required=True, help="【必填】run_id 是数据边界。新任务先跑 boss_jd.py 创建 run；不传直接报错。")
     ap.add_argument("--rescore", action="store_true",
                     help="重评：不跳过历史已评分候选人（换 JD / 修评分口径时用）")
     args = ap.parse_args()
@@ -275,7 +275,8 @@ def main():
     if not encrypt_job_id:
         raise ValueError("缺少 encrypt_job_id。\n  传 --encrypt-job-id，或设置 env BOSS_HR_ENCRYPT_JOB_ID")
     orch = RunOrchestrator(args.job_name, encrypt_job_id=encrypt_job_id)
-    run_id = orch.bind_or_create(args.run_id)
+    # 2026-07-30 重构：run_id 是数据边界，必须显式传（--run-id required=True）
+    run_id = orch.bind_existing_run(args.run_id)
     out = JobOutputManager(args.job_name, encrypt_job_id=encrypt_job_id, run_id=run_id)
     store = JobResumeStore(args.job_name, encrypt_job_id=encrypt_job_id)
 
@@ -287,42 +288,89 @@ def main():
         args.output = out.screening_results_path
         print(f'[orchestrator] --output 默认: {args.output}')
 
+    # 2026-07-30 数据边界：当前 run 缺 _llm_scores.json → 直接报错，绝不跨 run 找
+    if not os.path.exists(args.input):
+        print(json.dumps({
+            "status": "blocked",
+            "exit_code": 26,
+            "run_id": run_id,
+            "message": (f"当前 run={run_id} 缺少简历评分输入 {args.input}。"
+                         "评分脚本只读当前 run 的 process/，不会跨 run 或扫桌面找旧文件。"
+                         "请先跑 Step 2 (recommend_list + recommend_download) 拉取简历，"
+                         "再让 LLM 生成 _llm_scores.json。"),
+        }, ensure_ascii=False))
+        raise SystemExit(26)
+
     data = json.load(open(args.input, encoding="utf-8"))
     if not isinstance(data, list):
         print("错误：输入 JSON 必须是候选人数组")
         return
 
     # 姓名 → geek_id 反查表（_llm_scores.json 只有姓名时兜底用）
-    # 注意：BOSS 上"杨先生""吕女士"这类匿名昵称会重名，一个姓名可能对多个 geek_id，
-    # 所以值是 list 而非单个 ID。
-    # 优先使用 _llm_scores.json 里直接给的 geek_id 字段（更准，不依赖姓名）。
+    # 重要（2026-07-30 数据边界）：只从当前 run 的 process/ 读简历，绝不读
+    # state/resumes_master.json（那是跨 run 累计文件）。
     name_to_gids = {}
+    run_resume_paths = []
+    for p in (out.new_resumes_path,
+              out.get_process_path('batch_1_resumes.json'),
+              out.get_process_path('batch_2_resumes.json'),
+              out.get_process_path('batch_3_resumes.json')):
+        run_resume_paths.append(p)
     try:
-        _master = json.load(open(store.resumes_master_path, encoding="utf-8")).get("items", {})
-        for _key, _r in _master.items():
-            _n = (_r or {}).get("name", "")
-            if _n and ":" in _key:
-                name_to_gids.setdefault(_n, []).append(_key.split(":", 1)[1])
+        import glob as _glob
+        for p in _glob.glob(out.get_process_path('*_resumes.json')):
+            if p not in run_resume_paths:
+                run_resume_paths.append(p)
     except Exception:
         pass
+    for path in run_resume_paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            arr = json.load(open(path, encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(arr, list):
+            continue
+        for r in arr:
+            if not isinstance(r, dict):
+                continue
+            _n = (r.get("name") or "").strip()
+            _gid = (r.get("_meta", {}) or {}).get("encrypt_geek_id", "") or ""
+            if _n and _gid:
+                name_to_gids.setdefault(_n, []).append(_gid)
 
     def _find_prefix_for(item, g):
-        """在 _master 里找带 gid 的前缀（兼容 job_id 多 prefix 的情况）。
+        """在当前 run 的 process/ 简历里找带 gid 的前缀（兼容 job_id 多 prefix 的情况）。
 
-        BOSS 直聘同一个岗位在 Step 1 (boss_jd.py) 和 Step 2 (recommend_download.py)
-        返回的 encryptJobId 可能不同，导致 _master 里出现两个 prefix。
-        这里优先 item['job_id']（LLM 评分时直接传），其次 store.encrypt_job_id，
-        最后暴力扫一遍 _master 的所有 key 兜底。
+        2026-07-30 重构：只扫当前 run 的 process/，绝不读 state/resumes_master.json。
         """
         item_job_id = (item.get("job_id") or "").strip()
-        if item_job_id and f"{item_job_id}:{g}" in _master:
+        for path in run_resume_paths:
+            if not os.path.exists(path):
+                continue
+            try:
+                arr = json.load(open(path, encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(arr, list):
+                continue
+            for r in arr:
+                if not isinstance(r, dict):
+                    continue
+                meta = r.get("_meta", {}) or {}
+                rid = meta.get("encrypt_geek_id", "") or ""
+                if rid != g:
+                    continue
+                eid = meta.get("encrypt_job_id", "") or ""
+                if eid:
+                    return eid
+                if item_job_id:
+                    return item_job_id
+                return store.encrypt_job_id
+        if item_job_id:
             return item_job_id
-        if f"{store.encrypt_job_id}:{g}" in _master:
-            return store.encrypt_job_id
-        for k in _master.keys():
-            if k.endswith(f":{g}"):
-                return k.split(":", 1)[0]
-        return None
+        return store.encrypt_job_id
 
     def _unscored_gid(item):
         """返回该候选人「尚未评分」的 geek_id。
@@ -331,17 +379,16 @@ def main():
         兜底从 name_to_gids 反查（重名策略：只要还有未评分的同名候选人就放行）。
 
         返回值：
-            str  : 找到了未评分的 geek_id（且确认在简历池中）
-            ''   : _llm_scores.json 里的 geek_id 在简历池里查无此人（可能是手写简历）
+            str  : 找到了未评分的 geek_id（且确认在当前 run 简历池中）
+            ''   : _llm_scores.json 里的 geek_id 在当前 run 简历池里查无此人（拒绝评分）
             None : 该姓名下所有 geek_id 都已评过（应跳过）
 
-        校验逻辑：拿到 geek_id 后必须确认它存在于 resumes_master.json，
-        否则视为「_llm_scores.json 与简历池不一致」返回 ''，避免向
-        scored_state.json 写入未知候选人（会让下次 run 反查失败）。
+        2026-07-30 数据边界改造：
+          ''（当前 run 查无此人）也走拒绝路径，并打印警告。
         """
         gid = (item.get("geek_id") or "").strip()
         if gid:
-            # 校验 1：必须在简历池里（支持多 prefix 兜底）
+            # 校验 1：必须在当前 run 简历池里（支持多 prefix 兜底）
             matched_prefix = _find_prefix_for(item, gid)
             if not matched_prefix:
                 return ''
@@ -361,17 +408,27 @@ def main():
         return None
 
     # 跨 run 去重：跳过历史已评分的候选人（--rescore 可关闭）
+    # 2026-07-30 数据边界：''（当前 run 查无此人）也走跳过路径，并打印警告
     if not args.rescore:
-        _kept, _skipped = [], []
+        _kept, _skipped, _rejected = [], [], []
         for c in data:
-            if _unscored_gid(c) is None:
+            verdict = _unscored_gid(c)
+            if verdict is None:
                 _skipped.append(c.get("name", ""))
+            elif verdict == "":
+                _rejected.append(c.get("name", ""))
             else:
                 _kept.append(c)
         if _skipped:
             print(f"⏭ 跳过 {len(_skipped)} 位历史已评分候选人：{'、'.join(_skipped[:8])}"
                   + ("..." if len(_skipped) > 8 else ""))
             print("   （如需重评请加 --rescore）")
+        if _rejected:
+            print(f"🚫 拒绝 {len(_rejected)} 位不属于当前 run 的候选人："
+                  f"{'、'.join(_rejected[:8])}"
+                  + ("..." if len(_rejected) > 8 else ""))
+            print("   （_llm_scores.json 里的 geek_id 在当前 run 的 process/ 简历池中查无此人。"
+                  "评分脚本只认当前 run 自己的简历，绝不跨 run / 跨目录补齐。）")
         data = _kept
         if not data:
             print("本轮无新候选人可评分，退出。")

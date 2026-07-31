@@ -1,0 +1,18 @@
+{
+  "tool": "recommend_list",
+  "args": [
+    "--job-name",
+    "<岗位中文名>",
+    "--encrypt-job-id",
+    "<BOSS 的 encryptJobId>",
+    "--run-id",
+    "<YYYY-MM-DD_HHMMSS>",
+    "--batch-size",
+    "25",
+    "--batch",
+    "1"
+  ],
+  "timeout": 600,
+  "check": false,
+  "_note": "跑前先在 BOSS 推荐牛人页面手动调整筛选条件。"
+}

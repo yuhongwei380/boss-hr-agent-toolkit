@@ -1,21 +1,26 @@
 """Get BOSS job detail (JD) via CDP browser.
 
-Usage: 
+Usage:
   python boss_jd.py <encryptJobId|jobId|职位名> [--job-name <name>]
 
 Output: <job-name>/process/job_detail.json
+
+依赖（2026-07-31 替换）：
+  - 不再依赖 boss_agent_cli（boss.exe）。
+  - 岗位列表查询改用 shared/recruiter_job_catalog.py（在已登录的 CDP 浏览器里 fetch BOSS 后端 API）。
+  - 登录态检查由 shared/cdp_preflight.py 提供。
+  - 完整 JD 抓取仍走 patchright 直连 BOSS web/chat/job/edit iframe（真实 Edge TLS 指纹）。
 """
-import json, sys, subprocess, time, os, re, argparse
+import json, sys, time, os, re, argparse
 from pathlib import Path
 from patchright.sync_api import sync_playwright
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
 import fix_encoding  # noqa: E402  # 强制 Windows UTF-8 stdout
 from output_manager import JobOutputManager
+from recruiter_job_catalog import resolve_recruiter_job  # 2026-07-31 替代 boss.exe 调用
 
 CDP_URL = "http://localhost:9222"
-
-_BOSS_ENV = {**os.environ, "PYTHONHOME": "", "PYTHONIOENCODING": "utf-8"}
 
 
 def _safe_name(name: str) -> str:
@@ -24,23 +29,17 @@ def _safe_name(name: str) -> str:
 
 
 def resolve_encrypt_id(query):
-    result = subprocess.run(
-        ["boss", "--role", "recruiter", "--cdp-url", CDP_URL, "hr", "jobs", "list"],
-        capture_output=True, timeout=15, env=_BOSS_ENV
-    )
-    data = json.loads(result.stdout.decode("utf-8"))
-    exact = partial = None
-    for job in data.get("data", []):
-        name = job.get("jobName", "")
-        eid = job.get("encryptJobId", "")
-        jid = str(job.get("jobId", ""))
-        if query == eid or query == jid:
-            return eid, name
-        if query == name:
-            exact = (eid, name)
-        elif query in name and not partial:
-            partial = (eid, name)
-    return exact or partial or (None, None)
+    """根据 query 定位岗位，返回 (encryptJobId, jobName)。
+
+    2026-07-31 重构：直接调 shared/recruiter_job_catalog.resolve_recruiter_job，
+    不再 subprocess 'boss hr jobs list'。查询规则保留原逻辑：
+      - encryptJobId 精确 / jobId 精确 / jobName 精确优先
+      - jobName 模糊（含 query 子串）兜底
+    """
+    job = resolve_recruiter_job(query)
+    if not job:
+        return None, None
+    return job.get("encryptJobId"), job.get("jobName")
 
 
 def fetch_jd(encrypt_job_id):
@@ -130,14 +129,19 @@ if __name__ == "__main__":
 
     job_name = args.job_name or name  # 默认用人可读 jobName 作为 jobs.json name
 
-    # 默认走 orchestrator，让 Step 2/3/4 自动绑定同一 run_id
+    # 2026-07-30 重构：run_id 是数据边界。
+    # 新任务（不传 --run-id）→ create_new_run() 创建新 run
+    # 继续旧任务（传 --run-id）→ bind_existing_run() 校验后绑定
     from run_orchestrator import RunOrchestrator
     orch = RunOrchestrator(job_name, encrypt_job_id=encrypt_job_id)
-    run_id = orch.bind_or_create(args.run_id, job_id=eid, force=getattr(args, 'force', False))
+    if args.run_id:
+        run_id = orch.bind_existing_run(args.run_id)
+    else:
+        run_id = orch.create_new_run()
 
     output = JobOutputManager(job_name, encrypt_job_id=encrypt_job_id, run_id=run_id)
     output.ensure_run_dir()
-    print(f"run_id: {run_id}（orchestrator 绑定）")
+    print(f"run_id: {run_id}（orchestrator 创建）")
 
     # 异常护栏：脚本崩溃时若没写出 job_detail.json，自动清空 run_dir
     import atexit
@@ -162,7 +166,27 @@ if __name__ == "__main__":
     out_path = Path(output.jd_path)
     out_path.write_text(json.dumps(save_data, ensure_ascii=False, indent=2), encoding="utf-8")
     _SAVED = True  # 成功落盘，保留 run
-    orch.mark_done('jd', run_id=run_id)  # 标记 jd 步骤完成，下游可跟走
+    orch.mark_done('jd', run_id=run_id)
+
+    # 2026-07-30 重构：Step 1 完成后初始化 run.json（confirmed=false），
+    # 打印等用户确认的提示，退出 0。
+    # 智能体看到这里的提示必须停下，等用户回复『继续』后调 confirm_run.py。
+    orch.init_run_state(run_id)
+
+    print(json.dumps({
+        "status": "waiting_user_confirmation",
+        "run_id": run_id,
+        "stage": "awaiting_user_confirmation",
+        "message": (
+            "Step 1（提取 JD）已完成。"
+            "请在 BOSS 直聘『推荐牛人』页面调整筛选条件"
+            "（关键词、年龄、薪资、经验等），确保命中率。"
+            "调整完成后回复『继续』，我会调用：\n"
+            "  python shared/confirm_run.py "
+            f"--job-name \"{job_name}\" --encrypt-job-id \"{encrypt_job_id}\" --run-id \"{run_id}\"\n"
+            "把 run.json 的 confirmed 切到 true，再继续 Step 2~5。"
+        ),
+    }, ensure_ascii=False, indent=2))
     print(f"Saved to {out_path}")
     print(f"run_id: {output.run_id}")
     print("OK")

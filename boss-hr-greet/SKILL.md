@@ -58,23 +58,27 @@ export JOB_NAME="线控底盘制动、转向工程师"
 python -X utf8 "<项目根>/boss-hr-greet/scripts/auto_greet.py" \
   --job-name "$JOB_NAME" \
   --encrypt-job-id "$ENCRYPT_ID" \
+  --run-id "$RUN_ID" \
   --only-names "朱子睿,孙庆乐"
 
 # === 模式 2：默认按分招呼（≥70 推荐 tier 自动招呼，最多 10 人）===
 python -X utf8 "<项目根>/boss-hr-greet/scripts/auto_greet.py" \
   --job-name "$JOB_NAME" \
-  --encrypt-job-id "$ENCRYPT_ID"
+  --encrypt-job-id "$ENCRYPT_ID" \
+  --run-id "$RUN_ID"
 
 # === 模式 3：只扫描（不下发，用于调试 / 刷新位置表）===
 python -X utf8 "<项目根>/boss-hr-greet/scripts/auto_greet.py" \
   --job-name "$JOB_NAME" \
   --encrypt-job-id "$ENCRYPT_ID" \
+  --run-id "$RUN_ID" \
   --only-names "朱子睿" --scan-only
 
 # === 模式 4：用已有位置表直接招呼（list 状态未变时省 2 秒扫描）===
 python -X utf8 "<项目根>/boss-hr-greet/scripts/auto_greet.py" \
   --job-name "$JOB_NAME" \
   --encrypt-job-id "$ENCRYPT_ID" \
+  --run-id "$RUN_ID" \
   --only-names "朱子睿" --skip-scan
 ```
 
@@ -105,7 +109,7 @@ python -X utf8 "<项目根>/boss-hr-greet/scripts/auto_greet.py" \
 | `--threshold` | 70 | score 阈值（≥ 阈值的候选人会被打招呼）；`--only-names` 模式下忽略 |
 | `--max` | 10 | 最多打招呼人数；`--only-names` 模式下自动 = 名单长度 |
 | `--only-names` | - | 逗号分隔，精准点名（与 threshold 同时生效时 --only-names 优先） |
-| `--run-id` | 自动 `YYYY-MM-DD_HHMMSS` | 本次 run ID（不传自动生成） |
+| `--run-id` | （必填） | 本次 run ID（从 Step 1 boss_jd.py 输出取） |
 | `--dry-run` | - | 干跑：只定位不 click |
 | `--scan-only` | - | 只扫描记位置，不打招呼 |
 | `--skip-scan` | - | 跳过扫描，直接用已有位置表打招呼 |

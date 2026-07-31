@@ -8,12 +8,16 @@ description: |
 
 # BOSS 直聘岗位 JD 提取
 
-通过 CDP 连接到已登录的浏览器，自动导航到岗位编辑页提取完整 JD。
+> **2026-07-31 重构**：不再依赖第三方 boss_agent_cli。本 skill 内部用
+> `shared/recruiter_job_catalog.py`（浏览器内 fetch 拿 BOSS 后端 API）解析
+> query → encryptJobId，然后仍走 patchright 直连 CDP 浏览器抓 BOSS 编辑页 iframe
+> 拿完整 JD 表单。
 
 ## 前提条件
 
 - Edge/Chrome 以 `--remote-debugging-port=9222` 启动
-- Boss 招聘者 session 已登录
+- Boss 招聘者 session 已登录（`zp_at` + `wt2` + `bst` 三 cookie 都存在）
+- 可选：用 `shared/cdp_preflight.check_login()` 自检登录态
 
 ## 用法
 
@@ -29,16 +33,28 @@ python scripts/boss_jd.py <查询条件> [--job-name <name>] [--encrypt-job-id <
 - `--job-name`（**必填**，元数据用，目录名不再用它）：岗位中文名，会写入 `jobs.json` 作可读标识。
 - `--encrypt-job-id`（**必填**，新设计）：BOSS 返回的 `encryptJobId`，**直接作为工作区目录名**。例如 `9a7759badfd95d350nFz3d-_F1NX`。5 步脚本（list → download → score → HTML → greet）必须传同一个值，产物才落在同一个工作区目录。
 - 也可设环境变量 `BOSS_HR_ENCRYPT_JOB_ID=<encryptJobId>` 作为 fallback（CLI 参数优先）。
-- `--run-id`（可选）：本次 run 的 ID，**默认自动生成** `YYYY-MM-DD_HHMMSS`。同一 run 内的所有脚本必须传同一个 `--run-id`，产物才落在同一个 `runs/<run_id>/` 下。
+- `--run-id`（**可选**，新任务入口）：本次 run 的 ID。
+  - **不传** → 自动调 `create_new_run()`，生成新 run_id（`YYYY-MM-DD_HHMMSS`，同秒冲突自动加 `_N` 后缀）。每个新任务必须生成新 run_id——**禁止**沿用旧 run_id。
+  - **传 --run-id** → 调 `bind_existing_run(run_id)`，校验 run_dir 存在 + encrypt_job_id 匹配。不通过报错。
+  - 拿到 run_id 后**必须**传给 Step 2~5 所有后续脚本（`recommend_list.py` / `recommend_download.py` / `score_resumes.py` / `generate_html_report.py` / `auto_greet.py`）——这些脚本的 `--run-id` 是 `required=True`，不传 argparse 直接退出 2。
+
+> 🚨 **2026-07-30 重构**：不再有 `state/current_run.json`。每个 run 的状态独立写到 `runs/<run_id>/run.json`（含 `confirmed` 标志位、`steps_done`、`finished` 等）。Step 1 完成后 `run.json.confirmed=false`，**必须**等用户在 BOSS 调整完筛选条件后调：
+> ```bash
+> python -X utf8 shared/confirm_run.py \
+>   --job-name "<岗位名>" --encrypt-job-id "<id>" --run-id "<run_id>"
+> ```
+> 把 `confirmed` 切到 true 才能跑 Step 2。
 
 > 🚨 **严格模式**：缺 `--encrypt-job-id`（且未设 `BOSS_HR_ENCRYPT_JOB_ID`）时脚本**直接报错退出**，不会静默回退到中文目录名——避免你以为跑了新路径、实际又落到中文路径的事故。
 
 ## 工作流程
 
-1. 通过 boss CLI 获取岗位列表，匹配查询条件
+1. 用 `shared/recruiter_job_catalog.resolve_recruiter_job(query)` 把 query 解析成 `encryptJobId`
+   - 支持三种 query：encryptJobId 精确 / jobId 数字精确 / 岗位名（精确优先，模糊兜底）
+   - 返回 `{'encryptJobId', 'jobId', 'jobName', 'address', 'salaryDesc', ...}`
 2. 用 patchright 连接 CDP 浏览器
 3. 导航到岗位编辑页（`/web/chat/job/edit?encryptId=...`）
-4. 等待 iframe 加载完成后提取表单内容
+4. 等待 iframe 加载完成后提取表单内容（含职位描述富文本 + 关键词 + 福利）
 5. 输出到 `~/Desktop/boss-hr-output/<encryptJobId>/runs/<run_id>/process/job_detail.json`
 
 ## 输出目录规范（新设计 · 2026-07-29+）
@@ -55,7 +71,6 @@ python scripts/boss_jd.py <查询条件> [--job-name <name>] [--encrypt-job-id <
     │   ├── resumes_master.json
     │   ├── collection_state.json
     │   ├── scored_state.json
-    │   └── current_run.json
     └── runs/
         └── <run_id>/                       # 一次筛选任务
             ├── <run_id>_screening_report.html
@@ -103,5 +118,26 @@ python scripts/boss_jd.py <查询条件> [--job-name <name>] [--encrypt-job-id <
 
 - BOSS 管理后台为 iframe 架构：主页面是导航壳，表单内容在 `src="/web/frame/job/edit?..."` 的子框架中
 - 使用 `domcontentloaded` 而非 `networkidle` 以提速（5-8s）
-- boss CLI 输出为 GBK 编码，需 `decode('gbk')`
+- **登录态与 HTTP 调用**：所有 BOSS HTTP 调用都走浏览器内 fetch（`page.evaluate('fetch(...)')`），
+  复用浏览器真实 TLS 指纹 + 自动带 cookie。**不需要单独同步 `__zp_stoken__`**。
+- 岗位 query 解析由 `shared/recruiter_job_catalog.resolve_recruiter_job()` 提供，
+  支持精确/模糊匹配、同名兜底；详见 [shared/SKILL.md § recruiter_job_catalog](../shared/SKILL.md)。
 - `encryptJobId` 是后续推荐/下载/评分所有步骤的**岗位标识**，会作为 `candidate_key` 的前半段被使用
+
+## 调用示例（boss_jd.py 内部）
+
+```python
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
+from recruiter_job_catalog import resolve_recruiter_job
+
+# 三种 query 都接受
+job = resolve_recruiter_job('9a7759badfd95d350nFz3d-_F1NX')   # eid 精确
+job = resolve_recruiter_job('559622717')                       # jobId 精确
+job = resolve_recruiter_job('线控底盘制动、转向工程师')         # jobName 精确
+job = resolve_recruiter_job('工程师')                          # 模糊兜底
+if not job:
+    raise SystemExit(f"岗位未找到")
+
+encrypt_job_id = job['encryptJobId']  # 进入 fetch_jd + 落盘流程
+```

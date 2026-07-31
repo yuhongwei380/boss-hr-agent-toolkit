@@ -1,7 +1,9 @@
 # BOSS 直聘 · HR 智能体技能包
 
 > [!NOTE]
-> 由 **7 个 AI 智能体 Skill** 组成，基于 [boss-agent-cli](https://github.com/can4hou6joeng4/boss-agent-cli) 实现 BOSS 直聘简历筛选的**全流程自动化**：从岗位到可视化报告，一键搞定。
+> 由 **7 个 AI 智能体 Skill** 组成，基于 patchright + CDP 直连真实 Edge 浏览器（共享 wt2/zp_at/bst cookie），实现 BOSS 直聘简历筛选的**全流程自动化**：从岗位到可视化报告，一键搞定。
+>
+> **自包含**：不依赖第三方 BOSS CLI。所有 BOSS HTTP 调用走浏览器内 fetch（自动带 cookie + TLS 指纹），岗位查询走 `shared/recruiter_job_catalog.py`，登录检测走 `shared/cdp_preflight.py`。
 
 <p align="center">
   <img alt="skills" src="https://img.shields.io/badge/skills-7%20agents-blue">
@@ -62,12 +64,13 @@
 | # | Skill | 角色 | 作用 |
 |:-:|------|:----:|------|
 | 0 | **boss-hr-auto** | 🚪 入口 | 编排全流程工作流（唯一入口，5 步串到底） |
-| 1 | boss-agent-cli | 📖 参考 | BOSS CLI 命令手册（被其他 Skill 引用） |
 | 2 | boss-job-detail | Step 1 | 提取岗位 JD |
 | 3 | **boss-recommend-downloader** | Step 2 | 从推荐牛人页面获取完整简历（含 run_all 一把梭） |
 | 4 | resume-screener | Step 3 | 硬门槛过滤 + 加权评分 + 学历分档 |
 | 5 | html-report | Step 4 | 生成可视化 HTML 报告 + 沟通建议 |
 | 5+ | **boss-hr-greet** | Step 5 | 给高分候选人自动打招呼（主流程自动触发） |
+| lib | shared/cdp_preflight | 基础 | CDP 连接 + 登录态探测 |
+| lib | shared/recruiter_job_catalog | 基础 | 招聘者岗位列表 + encryptJobId 解析 |
 
 ### 工作流示意图
 
@@ -78,7 +81,15 @@ flowchart LR
     C --> D[resume-screener<br/>LLM 评分 + 公式重算]
     D --> E[html-report<br/>可视化报告]
     D --> F[boss-hr-greet<br/>≥70 自动打招呼]
+    B -.->|查询岗位| G[(shared/recruiter_job_catalog<br/>BOSS 后端 API)]
+    B -.->|登录自检| H[(shared/cdp_preflight<br/>zp_at/wt2/bst cookie)]
+    G -.->|浏览器内 fetch| I[Edge CDP 9222]
+    H -.->|patchright| I
 ```
+
+虚线箭头表示**底层依赖**：`boss-job-detail` 通过 `recruiter_job_catalog` 查岗位列表，
+每个 Step 入口通过 `cdp_preflight` 自检登录态；二者都通过 patchright 连到本地
+Edge 9222 端口（共享同一份 wt2/zp_at/bst cookie）。
 
 ---
 
@@ -91,17 +102,13 @@ flowchart LR
 | 依赖 | 说明 | 安装方式 |
 |------|------|---------|
 | Python 3.10+ | 运行脚本 | [python.org](https://python.org) |
-| [boss-agent-cli](https://github.com/can4hou6joeng4/boss-agent-cli) | BOSS 直聘 CLI | `uv tool install boss-agent-cli` |
 | patchright | CDP 客户端（**不含浏览器，不下载 Chromium**） | `pip install patchright` |
 | Chrome / Edge | 系统自带即可 | 已装直接跳过 |
 
 ### 1. 安装
 
 ```bash
-# boss CLI
-uv tool install boss-agent-cli
-
-# Python 依赖
+# Python 依赖（patchright 是唯一第三方依赖）
 pip install patchright
 ```
 
@@ -125,32 +132,17 @@ google-chrome \
 
 ### 3. 登录
 
-```bash
-# 浏览器扫码 → 提取到 CLI
-boss login --cdp --timeout 30
+在打开的 Edge 窗口里**人工扫码登录 BOSS 招聘者**，登录态会被 9222 端口的浏览器 session 持有。
 
-# 验证（必须两步都通过）
-boss --role recruiter me
-boss --role recruiter --platform zhipin --cdp-url http://localhost:9222 hr jobs list
+验证脚本会自动检查 `zp_at` / `wt2` / `bst` 三 cookie 是否齐全，无须手动命令。可以用 shared 模块快速自检：
+
+```python
+from shared.cdp_preflight import connect_cdp, check_login
+session = connect_cdp()        # 默认连 http://localhost:9222
+print(check_login(session))    # {'logged_in': True/False, 'cookies': {...}, ...}
 ```
 
-### 4. 关闭低风险模式（简历下载必需）
-
-```bash
-# 创建/编辑配置文件
-cat > ~/.boss-agent/config.json << 'EOF'
-{
-  "low_risk_mode": false,
-  "platform": "zhipin",
-  "role": "recruiter"
-}
-EOF
-```
-
-> [!WARNING]
-> **必须关闭**：`low_risk_mode` 默认开启会阻止简历获取。
-
-### 5. 开始使用
+### 4. 开始使用
 
 在智能体中调用：
 
@@ -254,12 +246,6 @@ boss-hr-agent-toolkit/
 ├── boss-hr-auto/                      # 🚪 全流程编排（唯一入口，纯文档）
 │   └── SKILL.md                        # 智能体按此文档顺序调用各子 Skill 脚本
 │
-├── boss-agent-cli/                    # 📖 CLI 命令参考
-│   ├── SKILL.md
-│   └── scripts/
-│       ├── boss_login_guard.py        # 登录守护
-│       └── patch_stoken.py            # stoken 补丁
-│
 ├── boss-job-detail/                   # Step 1：JD 提取
 │   ├── SKILL.md
 │   └── scripts/boss_jd.py
@@ -316,7 +302,6 @@ boss-hr-agent-toolkit/
     │   ├── collection_state.json
     │   ├── scored_state.json
     │   ├── geek_positions.json
-    │   └── current_run.json
     └── runs/                                       # 每次筛选任务一个 run_id 子目录
         └── <run_id>/
             ├── <run_id>_screening_report.html     # 最终 HTML 报告
@@ -366,7 +351,6 @@ ValueError: 缺少 encrypt_job_id。
 
 ## 🔗 相关链接
 
-- [boss-agent-cli](https://github.com/can4hou6joeng4/boss-agent-cli) — 底层 CLI 工具
 - [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright) — Playwright 分支（CDP 浏览器控制）
 
 ---

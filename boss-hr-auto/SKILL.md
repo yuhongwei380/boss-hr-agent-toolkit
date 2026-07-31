@@ -18,10 +18,8 @@ type: workflow
 ---
 
 > **stoken 说明**：本工具包全流程走 patchright 直连 CDP 浏览器
-> （用浏览器真实的 wt2/zp_at/bst cookie），不依赖 boss CLI 内部的 `__zp_stoken__`。
-> 如果 `boss_login_guard.py check --purpose resume` 返回 warning 提到 stoken 缺失，
-> **直接忽略继续运行**即可。需要用裸 `boss` CLI（不走本工具包）时，再手动跑
-> `python boss_login_guard.py ensure-stoken`。
+> （用浏览器真实的 wt2/zp_at/bst cookie），不依赖 `__zp_stoken__`。
+> 不再需要 `boss_login_guard.py ensure-stoken` 之类的 stoken 同步操作。
 
 # BOSS 直聘 HR 简历筛选全流程
 
@@ -29,78 +27,128 @@ type: workflow
 >
 > **本 Skill 是纯文档，没有一把梭脚本。** 智能体按下文 Step 顺序逐个调用子 Skill 的 `scripts/`。
 
-## 🚨 铁律：先开 run_id，每步都显式传
+## 🚨 run_id 铁律：新任务必创建新 run，绝不沿用（2026-07-30 重构）
 
-**这是最容易犯错的地方。** 所有脚本不传 `--run-id` 时会去读 `state/current_run.json`，
-那里存的可能是**上一次任务的旧 run_id** —— 产物就会写进旧目录，污染历史记录。
+**铁律：**
+- **新任务必须创建新 run_id** —— 无论上一个任务成功、失败、中断或未完成。
+- **run_id 是本次任务的数据边界** —— 本次 run 缺什么就执行什么，绝不拿桌面 / state 累计文件 / 其他 run 的旧产物补齐。
+
+`RunOrchestrator` 提供两个方法，语义清晰、不模糊：
+
+| 方法 | 用途 | 行为 |
+|------|------|------|
+| `create_new_run()` | 新任务入口 | 无条件创建新 run（YYYY-MM-DD_HHMMSS，同秒自动加 _N 后缀） |
+| `bind_existing_run(run_id)` | 继续旧任务 | 必须显式传 run_id；不传直接报错；run 不存在报错；encrypt_job_id 不匹配报错 |
+
+**Step 1（boss_jd.py）：创建新 run**
 
 ```bash
-# ① 开工第一件事：拿到本次 run_id + encryptJobId
-ENCRYPT_ID="<Step 1 boss_jd.py 返回的 encryptJobId>"
-JOB_NAME="<中文岗位名>"
+# 新任务第一步：创建新 run
+RUN_ID=$(python -X utf8 boss-job-detail/scripts/boss_jd.py "<查询>" \r
+  --job-name "<岗位名>" \r
+  --encrypt-job-id "<encryptJobId>" 2>&1 | grep -oP '(?<=run_id": ")[^"]+')
+echo "Created RUN_ID=$RUN_ID"
+```
 
-RUN_ID=$(python -X utf8 -c "
-import sys; sys.path.insert(0,'shared')
-from run_orchestrator import RunOrchestrator
-print(RunOrchestrator(job_name='$JOB_NAME', encrypt_job_id='$ENCRYPT_ID').bind_or_create())
-")
+boss_jd.py 默认会调 `create_new_run()`，把新 run 写到 `runs/<run_id>/`（每个 run 独立），状态写到 `runs/<run_id>/run.json`。
 
-# ② 之后每一个脚本都带上它（run_id + encrypt_job_id 必须同时传）
-export BOSS_HR_ENCRYPT_JOB_ID="$ENCRYPT_ID"   # 6 个 CLI 脚本统一读 env
-python -X utf8 <任意子脚本>.py ... --run-id "$RUN_ID" --encrypt-job-id "$ENCRYPT_ID"
+**Step 2~5：必须显式传 --run-id**
+
+`recommend_list.py` / `recommend_download.py` / `score_resumes.py` / `generate_html_report.py` / `auto_greet.py` 的 `--run-id` **全部 required=True**，不传直接 argparse 报错退出。
+
+```bash
+python -X utf8 boss-recommend-downloader/scripts/recommend_list.py \r
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID" \r
+  --batch-size 25 --batch 1
 ```
 
 ### 新接口铁律：5 步脚本全部要传 `--encrypt-job-id`
 
 **6 个 CLI 脚本**（`boss_jd.py` / `recommend_list.py` / `recommend_download.py` / `score_resumes.py` / `generate_html_report.py` / `auto_greet.py`）**都必须传 `--encrypt-job-id`**（或 env `BOSS_HR_ENCRYPT_JOB_ID`），缺则直接 `ValueError` 退出，**不会静默回退到中文目录名**。
 
-**设计原因**：新工作区目录名 = `encryptJobId`（不再是中文岗位名）。CLI 脚本只接收并透传，**路径选择集中在 `shared/output_manager.JobOutputManager`**——避免你以为跑了新路径、实际又落到中文路径的事故。
-
 **共享同一个 encryptJobId**：5 步必须传同一个 `--encrypt-job-id`，否则产物会落到不同工作区目录，list/download 找不到 score 文件，反之亦然。
 
-### run 卡住怎么办？
-
-如果 `state/current_run.json` 指向的 `runs/<run_id>/` 是空壳目录（只有 `process/` 子目录或 `.html` 报告才算「真实产物」），下一次 `bind_or_create()` 会新建 run。
-
-但如果目录里**有真实产物但你确实想开新 run**（例如上一步半途失败要重来），传 `--run-id` 显式指定一个新 ID：
-
-```bash
-# 显式开新 run（无视 current_run.json，产物落在指定目录）
-python -X utf8 boss-recommend-downloader/scripts/recommend_list.py \
-  --job-name "车架工程师" --max 25 --run-id "2026-07-29_120000"
-```
-
-或通过 `bind_or_create(run_id="...", force=False)` 同理。**`force` 参数仅供脚本内部用**——它跳过沿用检查，直接强制新建（用于一连串子脚本的 batch 模式）。
-
-### 跑完后清理
-
-A 流程跑完后 `greet` **默认会自动 `finish()`**（只要招呼成功 ≥1 人且非 dry-run），下次跑会自动开新 run。
+### 当前 run 缺数据时怎么办？
 
 | 场景 | 行为 |
 |------|------|
-| 默认招呼成功 | 自动 finish()，下次跑 bind_or_create() 开新 run |
-| 显式 `--no-finish` | 不 finish()，保留「回头补招呼同一 run」能力 |
-| `--dry-run` 或招呼成功 0 人 | 不 finish()，提示手动调 |
+| 跑 `score_resumes.py` 但当前 run 缺 `_llm_scores.json` | SystemExit(26) + JSON 错误：「当前 run 缺少简历评分输入，请先跑 Step 2」 |
+| 跑 `generate_html_report.py` 但当前 run 缺 `screening_results.json` | SystemExit(27) + JSON 错误：「当前 run 缺少评分结果，请先跑 Step 3」 |
+| 跑任何脚本但 `run_id` 在岗位目录下不存在 | FileNotFoundError 提示 run_id 不存在或属于别岗位 |
 
-如果需要手动 finish：
+**禁止**（任一项都可能让智能体走错路）：
+- ❌ 评分 / 报告脚本扫 `runs/*/` 找「最新」产物
+- ❌ 评分脚本读 `state/resumes_master.json` 跨 run 补齐
+- ❌ 报告脚本用桌面 HTML 报告当作输入
+- ❌ 智能体凭 glob / mtime 找历史 JSON 文件
+- ❌ 当前 run 缺产物时静默使用任何历史文件
 
-```bash
-python -X utf8 -c "
-import sys; sys.path.insert(0,'shared')
-from run_orchestrator import RunOrchestrator
-RunOrchestrator('<岗位名>').finish()   # 标记 finished=true，下次起新 run
-"
-```
+### 跑完后清理
+
+A 流程跑完后 `greet` **默认会自动 `finish()`**（只要招呼成功 ≥1 人且非 dry-run），下次跑 boss_jd.py 自动开新 run。
+
+| 场景 | 行为 |
+|------|------|
+| 默认招呼成功 | 自动 finish()，下次跑 boss_jd.py 创建新 run |
+| 显式 `--no-finish` | 不 finish，保留「回头补招呼同一 run」能力 |
+| `--dry-run` 或招呼成功 0 人 | 不 finish，提示手动调 |
 
 | ❌ 禁止 | ✅ 正确 |
 |--------|--------|
-| 直接调 `recommend_list.py` 不传 run-id | 先 `bind_or_create()` 再逐步传 `--run-id` |
-| 每个 Step 各开各的 run_id | 5 个 Step 共用同一个 |
+| 调 `bind_or_create()` 让脚本自动决定 run | 调 `create_new_run()`（boss_jd.py 自动）或 `bind_existing_run(run_id)`（其他脚本） |
+| Step 2~5 不传 `--run-id`（argparse 会报错） | boss_jd.py 创建新 run → 把 run_id 传给所有后续脚本 |
+| 跑评分时缺 `_llm_scores.json` 用 `state/resumes_master.json` 补 | 直接报错，按错误提示执行上游 Step 2 |
+| 跑报告时缺 `screening_results.json` 用桌面旧 HTML 报告 | 直接报错，按错误提示执行上游 Step 3 |
+| 评分 / 报告脚本扫 `runs/*/` 找最新 | 只读 `--run-id` 指定的 `runs/<run_id>/process/` |
 | 不传 `--encrypt-job-id` 跑 CLI（会 `ValueError`） | 5 步脚本统一传同一个 encryptJobId，或设 `BOSS_HR_ENCRYPT_JOB_ID` |
 | 自己造 `_split_N.json` / `_llm_N.json` 等中间文件 | 直接写规范内的 `_llm_scores.json` |
 
+
 > 评分环节即使有几十份简历，也**直接写一个 `_llm_scores.json`**。
 > 需要分批处理时在内存里分，不要在 `process/` 里落临时分片文件。
+
+## 🚦 用户确认门（2026-07-30 新增 · 必读）
+
+**铁律：Step 1 完成后必须停下，等用户在 BOSS 调整完筛选条件并确认。**
+
+```
+Step 1 (boss_jd.py)
+   └─ 完成后：写 runs/<run_id>/run.json (confirmed=false)，打印 JSON 提示
+        └─ 智能体看到提示立刻停下，等用户回复『继续』
+
+用户回复『继续』
+   └─ 智能体调用：python shared/confirm_run.py \
+                    --job-name ... --encrypt-job-id ... --run-id ...
+        └─ run.json.confirmed=true，user_confirmed_at=<now>
+
+Step 2~5 (recommend_list / recommend_download / score / report / greet)
+   └─ 脚本开头 is_confirmed(run_id) 检查，未确认 → SystemExit(20)
+```
+
+**禁止清单：**
+- ❌ Step 1 完成后直接调 `recommend_list.py` / `recommend_download.py`（会 SystemExit 20）
+- ❌ 跳过 `confirm_run.py` 直接修改 run.json 的 `confirmed` 字段（属于污染审计日志）
+- ❌ 调 `bind_or_create()`（已废弃，调用即抛 RuntimeError）
+
+**run.json 结构：**
+```json
+{
+  "run_id": "2026-07-30_103000",
+  "encrypt_job_id": "9a7759badfd95d350nFz3d-_F1NX",
+  "started_at": "2026-07-30 10:30:00",
+  "confirmed": false,
+  "user_confirmed_at": null,
+  "steps_done": ["jd"],
+  "last_step": "jd",
+  "last_step_at": "2026-07-30 10:30:05",
+  "finished": false,
+  "finished_at": null
+}
+```
+
+**旧 `state/current_run.json` 已彻底废弃**——每个 run 的状态独立写到 `runs/<run_id>/run.json`。
+
+---
 
 ## 流程总览
 
@@ -139,7 +187,29 @@ RunOrchestrator('<岗位名>').finish()   # 标记 finished=true，下次起新 
 | 3 | **resume-screener** | Step 3：岗位类型判断→硬门槛过滤→加权评分→排名输出 |
 | 4 | **html-report** | Step 4：生成 HTML 可视化报告 |
 | 5 | **boss-hr-greet** | Step 5：自动打招呼 |
-| - | **boss-agent-cli** | 基础：CLI 命令参考、双模式登录 |
+| lib | **shared/recruiter_job_catalog** | 基础：BOSS 后端 API 拿岗位列表（浏览器内 fetch，自带 cookie） |
+| lib | **shared/cdp_preflight** | 基础：CDP 连接 + 登录态探测（zp_at/wt2/bst cookie 检查） |
+
+> **`shared/` 模块不是入口 Skill**，不被 AI 智能体直接加载；业务脚本 `import` 后调用。
+> 完整接口与设计见 [`shared/SKILL.md`](../shared/SKILL.md)。
+
+### 基础模块速览（2026-07-31 替代 boss_agent_cli）
+
+| 模块 | 关键函数 | 用途 |
+|---|---|---|
+| `shared/cdp_preflight` | `connect_cdp()` / `check_login()` / `get_cookies()` | 连 Edge 9222；检查 zp_at/wt2/bst cookie；识别当前页面（recommend/chat/job_edit/login） |
+| `shared/recruiter_job_catalog` | `list_jobs()` / `resolve_recruiter_job(query)` / `fetch_job_detail(eid)` | BOSS 后端 API 拿岗位列表；按 encryptJobId/jobId/岗位名（精确+模糊）定位 |
+| `shared/output_manager` | `JobOutputManager(...)` | 文件路径（`jd_path` / `new_resumes_path` / `screening_results_path` 等） |
+| `shared/run_orchestrator` | `create_new_run()` / `bind_existing_run(id)` / `finish(id)` | run_id 生命周期（run_id 是数据边界） |
+| `shared/job_resume_store` | `is_scored()` / `mark_scored()` | 跨 run 累计简历 + 评分去重 |
+| `shared/cli_runner` | `run_python_cli(tool, args)` | Windows PowerShell 安全的 CLI 执行层（白名单 9 个 tool） |
+
+**调用约定**：
+
+- 业务脚本（`boss_jd.py` / `recommend_list.py` 等）`import` 即可；不要 subprocess 调 `boss.exe`
+- 登录态自检：`state = check_login(session)`；`not state['logged_in']` → 提示用户扫码
+- 岗位查询：`job = resolve_recruiter_job(query)`；3 种 query 都接受；无匹配返回 `None`
+- HTTP 调用全走浏览器内 `fetch`（`page.evaluate`），复用浏览器真实 TLS 指纹 + cookie，**不需要管 `__zp_stoken__`**
 
 ---
 
@@ -148,60 +218,233 @@ RunOrchestrator('<岗位名>').finish()   # 标记 finished=true，下次起新 
 ### 必需安装
 
 1. **Python 3.10+** — 从 python.org 安装，勾选 "Add Python to PATH"
-2. **uv** — `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
-3. **boss-agent-cli** — `uv tool install boss-agent-cli`
-4. **patchright** — `pip install patchright`（抗检测浏览器自动化）
+2. **patchright** — `pip install patchright`（抗检测浏览器自动化，仅做 CDP 客户端用，不下载 Chromium）
 
 ### 环境变量（每次运行前必做）
 
+**Bash / macOS / Linux：**
 ```bash
 export PYTHONHOME=""
 export PATH="$PATH:$HOME/.local/bin"
 export PYTHONIOENCODING=utf-8
 ```
 
-### CLI 登录验证
-
-```bash
-# 验证是否真登录
-boss.exe --role recruiter me
-boss.exe --role recruiter --platform zhipin --cdp-url http://localhost:9222 hr jobs list
+**PowerShell（Windows）：**
+```powershell
+$env:PYTHONHOME = ""
+$env:PYTHONIOENCODING = "utf-8"
+# PATH 通常已包含 uv 装工具的目录，无需追加
 ```
 
-**判定标准：**
-| `hr jobs list` 结果 | `boss me` 结果 | 含义 | 操作 |
-|:-------------------|:--------------|:----|:----|
-| `data: [{...}]`（有数据） | `name: "真实姓名"` | ✅ 真登录 | 继续执行 |
-| `data: {}` 或 `data: []`（空） | `name: ""`（空） | ❌ 假阳性 | `boss login --cdp --timeout 30` |
-
-**假阳性修复命令（唯一正确方式）：**
-```bash
-boss login --cdp --timeout 30
+**cmd（Windows）：**
+```cmd
+set PYTHONHOME=
+set PYTHONIOENCODING=utf-8
 ```
 
-### 启动 CDP 浏览器
+> 💡 **为什么不用 `-X utf8`？** 因为它只能强制 stdout 编码为 UTF-8；
+> 但 Windows 中文 cmd 还会把 stdout 当 GBK 输出（除非设环境变量）。
+> 推荐**同时**用两种方式以最大化兼容：
+>
+> - `python -X utf8 script.py ...`（强制 UTF-8 mode）
+> - 或在环境里设 `PYTHONIOENCODING=utf-8`（推荐，影响所有子进程）
+
+### 跨平台命令对照
+
+| 操作 | Bash | PowerShell |
+|------|------|-----------|
+| Step 1 跑 JD | `python -X utf8 boss-job-detail/scripts/boss_jd.py ...` | `python -X utf8 boss-job-detail/scripts/boss_jd.py ...` |
+| Step 2 收集名单 | `python -X utf8 boss-recommend-downloader/scripts/recommend_list.py ...` | `python -X utf8 boss-recommend-downloader/scripts/recommend_list.py ...` |
+| 用户确认 | `python -X utf8 shared/confirm_run.py ...` | `python -X utf8 shared/confirm_run.py ...` |
+
+> `-X utf8` 在 Windows / macOS / Linux 都可用。`PYTHONIOENCODING=utf-8` 适合需要后台 / 调度器场景。
+
+### CDP 登录验证
 
 ```bash
-# Windows Edge
+# Edge 以调试模式启动（必须用 --user-data-dir 保留登录态）
 "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" ^
   --remote-debugging-port=9222 ^
   --user-data-dir="%USERPROFILE%\.workbuddy\chrome-profiles\boss-cdp"
 ```
 
-### 关闭 CLI 低风险模式（简历下载必需）
+在打开的 Edge 窗口里人工扫码登录 BOSS 招聘者。登录态由浏览器 cookie 自动持有，
+下一步 `boss_jd.py` / `recruiter_job_catalog.list_jobs()` 会用 `shared/cdp_preflight.check_login()`
+自检 `zp_at` / `wt2` / `bst` 三 cookie 是否齐全。无需手敲 CLI 命令。
 
-```bash
-# 创建/编辑配置文件
-cat > ~/.boss-agent/config.json << 'EOF'
-{
-  "low_risk_mode": false,
-  "platform": "zhipin",
-  "role": "recruiter"
-}
-EOF
+---
+
+## 🛡️ 安全执行层：cli_runner.py（2026-07-30 新增 · 推荐）
+
+**问题**：Windows PowerShell / CMD 对中文、空格、JSON、特殊字符的参数解析不稳定。
+
+**解决**：`shared/cli_runner.py` 用 `subprocess.run([...], shell=False)` + 参数数组启动白名单内的项目 CLI，中文 / JSON / 空格作为**单个完整参数**传递。
+
+### 职责（只是执行器，不是流程编排器）
+
+| ✅ 负责 | ❌ 不负责 |
+|--------|---------|
+| 用 `sys.executable` 启动项目 CLI | 创建 / 选择 / 确认 run_id |
+| 用参数数组传参（不拼命令字符串） | 读 current_run.json / run.json 自动推断 |
+| `subprocess.run(..., shell=False)` | 自动补 --run-id |
+| 设置 UTF-8 环境 | 自动调 confirm_run / recommend_list / download |
+| 固定 cwd 到工具包根目录 | 跑完整 pipeline |
+| 捕获 stdout / stderr / 真实退出码 | 搜索桌面 / 历史文件 |
+| 保留子进程退出码（含 20/26/27） | 替代 RunOrchestrator |
+| 统一 JSON 输出 | 替代业务脚本的 argparse + 状态校验 |
+
+### Python API
+
+```python
+from shared.cli_runner import run_python_cli
+
+result = run_python_cli(
+    "score_resumes",
+    [
+        "--job-name", "线控底盘制动、转向工程师",
+        "--encrypt-job-id", "9a7759badfd95d350nFz3d-_F1NX",
+        "--run-id", "2026-07-30_132000",
+    ],
+    timeout=600,
+    # check=True 时 rc != 0 → 抛 CliRunnerError
+)
+print(result.returncode)
+print(result.stdout)
 ```
 
-> ⚠️ **必须关闭**：`low_risk_mode` 默认开启会阻止简历获取。
+### CLI 调用（推荐用 --spec-file 避免命令行参数解析问题）
+
+创建 UTF-8 spec 文件（任意文件名，如 `spec.json`）：
+
+```json
+{
+  "tool": "score_resumes",
+  "args": [
+    "--job-name",
+    "线控底盘制动、转向工程师",
+    "--encrypt-job-id",
+    "9a7759badfd95d350nFz3d-_F1NX",
+    "--run-id",
+    "2026-07-30_132000"
+  ],
+  "timeout": 600,
+  "check": false
+}
+```
+
+执行：
+
+```bash
+# Bash / macOS / Linux
+python -X utf8 shared/cli_runner.py --spec-file spec.json
+
+# PowerShell / Windows
+python -X utf8 shared/cli_runner.py --spec-file spec.json
+```
+
+统一 JSON 输出（stdout）：
+
+```json
+{
+  "status": "success",
+  "tool": "score_resumes",
+  "returncode": 0,
+  "stdout": "...",
+  "stderr": ""
+}
+```
+
+**失败示例**（子脚本 rc=20 → runner 原样返回 rc=20）：
+
+```json
+{
+  "status": "failed",
+  "tool": "recommend_list",
+  "returncode": 20,
+  "stdout": "...",
+  "stderr": "用户尚未确认，禁止执行 Step 2"
+}
+```
+
+### 工具白名单（cli_runner 仅接受以下 7 个 tool）
+
+| tool 名 | 对应脚本 |
+|---------|---------|
+| `boss_jd` | `boss-job-detail/scripts/boss_jd.py` |
+| `confirm_run` | `shared/confirm_run.py` |
+| `recommend_list` | `boss-recommend-downloader/scripts/recommend_list.py` |
+| `recommend_download` | `boss-recommend-downloader/scripts/recommend_download.py` |
+| `score_resumes` | `resume-screener/scripts/score_resumes.py` |
+| `generate_html_report` | `html-report/scripts/generate_html_report.py` |
+| `auto_greet` | `boss-hr-greet/scripts/auto_greet.py` |
+
+白名单外的 tool 立即拒绝（ValueError）。脚本路径逃逸（`../`）也拒绝。
+
+### 如何执行 Step 1 并停在确认门
+
+```bash
+# 1. 写 spec_step1.json
+cat > spec_step1.json << 'EOF'
+{
+  "tool": "boss_jd",
+  "args": [
+    "<查询条件：encryptJobId 或 jobId 或岗位名>",
+    "--job-name", "<岗位名>",
+    "--encrypt-job-id", "<id>"
+  ]
+}
+EOF
+
+# 2. 跑 Step 1
+python -X utf8 shared/cli_runner.py --spec-file spec_step1.json
+# → 创建新 run，run.json.confirmed=false，输出 run_id，**当前智能体轮次结束**
+```
+
+智能体必须**停下**，等用户在 BOSS 调整完筛选条件后回复『继续』。
+
+### 用户确认后执行 Step 2
+
+```bash
+# 写 spec_confirm.json（用户确认）
+cat > spec_confirm.json << 'EOF'
+{
+  "tool": "confirm_run",
+  "args": [
+    "--job-name", "<岗位名>",
+    "--encrypt-job-id", "<id>",
+    "--run-id", "<Step 1 拿到的 run_id>"
+  ]
+}
+EOF
+python -X utf8 shared/cli_runner.py --spec-file spec_confirm.json
+
+# 再写 spec_step2.json
+cat > spec_step2.json << 'EOF'
+{
+  "tool": "recommend_list",
+  "args": [
+    "--job-name", "<岗位名>",
+    "--encrypt-job-id", "<id>",
+    "--run-id", "<run_id>",
+    "--batch-size", "25",
+    "--batch", "1"
+  ]
+}
+EOF
+python -X utf8 shared/cli_runner.py --spec-file spec_step2.json
+```
+
+### 直接 CLI（人工调试方式）
+
+各业务脚本**仍保留独立 CLI 能力**，便于测试和人工排错。Runner 是推荐入口，但直接跑业务脚本也工作：
+
+```bash
+# 直接调用（绕过 cli_runner）
+python -X utf8 resume-screener/scripts/score_resumes.py \
+  --job-name "<岗位名>" --encrypt-job-id "<id>" --run-id "<run_id>"
+```
+
+> ❌ 临时 `.ps1` / `.bat` 多层引号调用示例**已删除** —— 推荐用 `--spec-file`。
 
 ---
 
@@ -230,30 +473,31 @@ PYTHONHOME="" python -X utf8 boss-job-detail/scripts/boss_jd.py <查询条件> \
 
 **核心操作：**
 ```bash
-# 公共参数（与 Step 1 同一个 encryptJobId）
+# 公共参数（与 Step 1 同一个 encryptJobId + 同一个 run_id）
 export ENCRYPT_ID="<Step 1 拿到的 encryptJobId>"
 export JOB_NAME="<岗位中文名>"
+export RUN_ID="<Step 1 拿到的 run_id>"
 
 # 分批运行（推荐，不刷新页面，顺序固定）
 python -X utf8 boss-recommend-downloader/scripts/recommend_list.py \
-  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" \
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID" \
   --batch-size 25 --batch 1
 python -X utf8 boss-recommend-downloader/scripts/recommend_download.py \
-  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" \
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID" \
   --batch 1
 # 评分后继续下一批
 python -X utf8 boss-recommend-downloader/scripts/recommend_list.py \
-  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" \
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID" \
   --batch-size 25 --batch 2
 python -X utf8 boss-recommend-downloader/scripts/recommend_download.py \
-  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" \
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID" \
   --batch 2
 
 # 或一次性运行
 python -X utf8 boss-recommend-downloader/scripts/recommend_list.py \
-  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID"
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID"
 python -X utf8 boss-recommend-downloader/scripts/recommend_download.py \
-  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID"
+  --job-name "$JOB_NAME" --encrypt-job-id "$ENCRYPT_ID" --run-id "$RUN_ID"
 ```
 
 > **注意**：先暂停等待用户调整推荐牛人页面，用户示意继续后进行下载。`recommend_download.py` 使用 patchright + 浏览器 fetch 方案（真实 Edge TLS 指纹），
@@ -334,7 +578,7 @@ python -X utf8 boss-hr-greet/scripts/auto_greet.py \
 
 **输出：** `runs/<run_id>/process/greet_log.json`（招呼成功 / 失败详情）
 
-A 流程默认招呼成功 ≥1 时**自动 `finish()`**，下次跑 `bind_or_create()` 自动开新 run。
+A 流程默认招呼成功 ≥1 时**自动 `finish(run_id)`**，下次跑 boss_jd.py 自动创建新 run。
 
 ---
 
@@ -366,12 +610,12 @@ boss-hr-agent-toolkit/
     │   ├── resumes_master.json                    # 累计简历（含 _meta）
     │   ├── collection_state.json
     │   ├── scored_state.json
-    │   ├── geek_positions.json
-    │   └── current_run.json
+    │   └── geek_positions.json
     └── runs/                                       # 每次筛选任务一个 run_id 子目录
         └── <run_id>/
             ├── <run_id>_screening_report.html     # 最终 HTML 报告
             └── process/                            # 过程文件（留痕查阅）
+                ├── run.json                        # 该 run 独立状态（confirmed / steps_done / finished）
                 ├── job_detail.json                 # Step 1: boss_jd.py 输出
                 ├── batch_1_ids.json / recommend_geek_ids.json  # Step 2B: list 输出
                 ├── new_resumes.json                # Step 2B: recommend_download.py 输出
@@ -428,27 +672,28 @@ output.cleanup_temp_scripts()
 - 验证：`boss me` 返回真实用户信息
 - `boss status` 不可靠（可能假阳性）
 
-### CLI 假阳性检测（重要）
-`boss status` 返回 `logged_in: true` 但实际 token 可能已过期。**确认方法：**
-```bash
-# ✅ 真阳性 — 能返回在线岗位数据
-boss --role recruiter --platform zhipin --cdp-url http://localhost:9222 hr jobs list
+### 登录态自检（重要）
 
-# ❌ 假阳性 — 返回 data: {}（空对象），token 已过期
-```
-关键判断：如果 `hr jobs list` 返回 `"data": {}`（空 JSON 对象）而非岗位数组，说明 CLI session 已过期。**不要继续依赖 CLI**，立即切换到 CDP 浏览器直接操作。
+本工具包完全走 patchright + CDP，所有 BOSS HTTP 调用都在**浏览器内部**完成（`page.evaluate(fetch(...))`），
+自动复用浏览器的 cookie + TLS 指纹，不需要单独同步 `__zp_stoken__`。
+
+每个 Step 脚本入口都会用 `shared/cdp_preflight.check_login()` 自检：
+- `zp_at` / `wt2` / `bst` 三个 cookie 是否齐全
+- 当前页面是否在 BOSS 域（`page_kind` 字段：recommend / chat / job_edit / login / unknown）
+
+如果自检失败：
+- `logged_in=False` → 在 9222 那个 Edge 窗口里重新扫码
+- `page_kind='login'` → 同上（被踢回登录页）
+- `page_kind='unknown'` → 可能是 cookie 没同步，关掉 Edge 重启一次再扫
 
 ### 编码
-- BOSS CLI stdout 为 GBK 编码
-- 禁止用 PowerShell 管道处理中文 → 乱码
+- 所有脚本都强制 `PYTHONIOENCODING=utf-8` + `python -X utf8`，输出已是 UTF-8
+- Windows PowerShell / cmd 直接跑会变 GBK；务必用 `python -X utf8 ...` 或设环境变量
 - 看到乱码直接如实报告，不要猜测中文内容
-
-### 模式切换
-- 求职者模式：`boss ...`（默认）
-- 招聘者（HR）模式：`boss --role recruiter hr ...`
-- 不同模式命令不同，模式不对会超时或返回空
 
 ### 防封
 - 简历下载每次只下一份，脚本自带随机延迟
 - 不要连续快速操作同一接口
 - 推荐牛人下载：滚动 3-6 秒随机，简历获取 60-120 秒随机
+- BOSS 后端 API 调用（如 `recruiter_job_catalog.list_jobs`）走浏览器内 fetch，
+  复用浏览器真实 TLS 指纹，无须额外模拟

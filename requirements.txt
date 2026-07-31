@@ -4,6 +4,3 @@
 
 # CDP 客户端库（连接已有浏览器，不下载 Chromium）
 patchright>=1.40
-
-# BOSS 直聘 CLI 工具
-boss-agent-cli
