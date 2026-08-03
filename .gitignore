@@ -21,6 +21,9 @@ WorkBuddy/
 boss-resumes/
 *.json.bak
 
+# Refactor intermediate artifacts (machine-generated; regenerate via tools/refactor_audit.py)
+artifacts/refactor/
+
 # OS
 .DS_Store
 Thumbs.db
