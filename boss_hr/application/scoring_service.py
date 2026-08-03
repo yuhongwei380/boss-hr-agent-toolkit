@@ -114,67 +114,40 @@ def _ensure_manifest(job_name: str, eid: str, run_id: str,
 
 
 def _candidates_with_status(manifest: dict, scoring_dir: str) -> list[dict]:
-    """返回每位候选人 + output 是否存在 + 是否有效。
+    """返回每位候选人 + output 文件状态（不解 JSON 内容）。
 
     每项 schema：
       {geek_id, name, input_path, output_path, output_abs,
-       has_output, output_valid, validation_error}
+       has_output, output_size}
+
+    合法性判断**不**在这里做。collect_llm_scores.py 是评分 output 合法性
+    的唯一判断来源；scoring_service 只关心"文件是否已写盘"——
+    has_output = (output 文件存在 且 size > 0)。
+
+    空文件（size==0）视为"未评分"，返回该候选人 waiting_llm 让 LLM 重写。
     """
     out = []
     for entry in manifest.get("candidates", []):
         geek_id = entry.get("geek_id")
         output_rel = entry.get("output_path")
         output_abs = os.path.normpath(os.path.join(scoring_dir, output_rel)) if output_rel else None
-        has_output = bool(output_abs and os.path.isfile(output_abs))
-        item = {
+        size = 0
+        if output_abs and os.path.isfile(output_abs):
+            try:
+                size = os.path.getsize(output_abs)
+            except OSError:
+                size = 0
+        has_output = size > 0
+        out.append({
             "geek_id": geek_id,
             "name": entry.get("name", ""),
             "input_path": entry.get("input_path"),
             "output_path": output_rel,
             "output_abs": output_abs,
             "has_output": has_output,
-            "output_valid": False,
-            "validation_error": None,
-        }
-        if has_output:
-            try:
-                with open(output_abs, "r", encoding="utf-8") as f:
-                    score = json.load(f)
-                errs = _validate_score(score)
-                if not errs:
-                    item["output_valid"] = True
-                else:
-                    item["validation_error"] = "; ".join(errs)
-            except Exception as e:
-                item["validation_error"] = f"JSON 解析失败：{e}"
-        out.append(item)
+            "output_size": size,
+        })
     return out
-
-
-def _validate_score(score: dict) -> list[str]:
-    """复制 collect_llm_scores._validate_score 的最小校验（不引入 import 依赖）。
-
-    校验：必须 dict；必含 name + dims；dims 含 exp/skill/proj/major 且 0-100。
-    """
-    REQUIRED_SCORE_FIELDS = ("name", "dims")
-    REQUIRED_DIM_FIELDS = ("exp", "skill", "proj", "major")
-    errs = []
-    if not isinstance(score, dict):
-        return [f"score 不是 dict 类型：{type(score).__name__}"]
-    if not score.get("name"):
-        errs.append("缺 name 字段")
-    dims = score.get("dims")
-    if not isinstance(dims, dict):
-        errs.append("缺 dims 字段或不是 dict")
-        return errs
-    for k in REQUIRED_DIM_FIELDS:
-        v = dims.get(k)
-        if not isinstance(v, (int, float)):
-            errs.append(f"dims.{k} 不是数字：{v!r}")
-            continue
-        if not (0 <= v <= 100):
-            errs.append(f"dims.{k}={v} 超出 [0, 100]")
-    return errs
 
 
 def _find_next(candidates: list[dict]) -> Optional[dict]:
