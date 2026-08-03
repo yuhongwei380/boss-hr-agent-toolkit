@@ -438,11 +438,20 @@ def test_score_repeat_returns_next_candidate(workspace):
     # 每次返回不同
     assert len(set(gids_seen)) == 3, f"应返回 3 个不同候选人，实际：{gids_seen}"
 
-    # 第 4 次：所有 output 都齐了（C1 阶段还没 finalize）
+    # 第 4 次：所有 output 都齐了 → dispatcher 切到 finalize（C2）
+    # 此时数据简单（缺 school 等），collect 可能报 invalid；测试只要
+    # 验证 dispatcher 不再返回 waiting_llm with candidate_id。
     proc4 = _run_cli("score", "--job-name", job_name,
                      "--encrypt-job-id", eid, "--run-id", target,
                      env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
     assert proc4.returncode == 0
     p4 = json.loads(_decode(proc4.stdout))
-    assert p4["data"]["candidate_id"] is None
-    assert p4["data"]["remaining"] == 0
+    # 不再走 C1 候选协调；要么 scoring_complete，要么 waiting_llm (invalid)
+    assert p4["status"] in ("scoring_complete", "waiting_llm")
+    if p4["status"] == "waiting_llm":
+        # invalid 路径：data 必须有 validation_error
+        assert p4["data"].get("validation_error") is not None
+    else:
+        # scoring_complete 路径：data 含 scored + screening_results_file
+        assert "scored" in p4["data"]
+        assert "screening_results_file" in p4["data"]

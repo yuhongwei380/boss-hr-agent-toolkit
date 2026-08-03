@@ -1,18 +1,23 @@
 # -*- coding: utf-8 -*-
-"""boss_hr.application.scoring_service — score 命令业务逻辑（C1）。
+"""boss_hr.application.scoring_service — score 命令业务逻辑。
 
-职责：
-  - 校验 run 存在 + confirmed=true + new_resumes.json 存在
-  - manifest 不存在时调 prepare_scoring_inputs.py 一次
-  - 从 manifest 清单 + outputs/ 文件状态 找下一位需要评分的候选人
-  - 返回 {candidate_id, name, input_file, output_file, remaining}
-  - 不读完整 new_resumes.json（只 stat）
-  - 不调 collect_llm_scores / score_resumes（留给 C2）
+C1：find_next_candidate
+  - 校验 run + confirmed + new_resumes
+  - manifest 不存在时调 prepare_scoring_inputs
+  - 从 manifest + outputs/ 文件状态找下一位候选人
+  - 每次只返回一位；不调 collect / score_resumes
 
-C2 阶段（finalize_when_ready）：
-  - 所有 output 都齐 → 调 collect → 调 score_resumes
-  - 有 invalid → 报告 invalid 候选人
-  - 已有 screening_results.json → 幂等返回 scoring_complete
+C2：finalize_when_ready
+  - 当所有 output 都齐（remaining=0）时
+  - screening_results.json 已存在 → 幂等返回 scoring_complete
+  - 否则调 collect_llm_scores
+  - missing/invalid → 返回该候选人（waiting_llm），让 LLM 覆盖 output 再来
+  - 全部有效 → 调 score_resumes
+  - score_resumes 失败透传 exit_code
+
+调用顺序：
+  score → find_next_candidate（remaining > 0）
+       → finalize_when_ready（remaining == 0）
 """
 from __future__ import annotations
 import json
@@ -41,10 +46,6 @@ def _resolve_encrypt_job_id(cli_value: Optional[str]) -> Optional[str]:
 
 
 def _require_run(job_name: str, eid: str, run_id: str) -> tuple[int, Optional[str]]:
-    """校验 run 存在 + confirmed + new_resumes 存在；都通过返回 0，否则返回 (exit_code, msg)。
-
-    返回 (exit_code, None/error_message)。exit_code=0 表示 OK。
-    """
     from shared.run_orchestrator import (
         RunOrchestrator,
         EXIT_CODE_RUN_NOT_FOUND,
@@ -67,14 +68,13 @@ def _require_run(job_name: str, eid: str, run_id: str) -> tuple[int, Optional[st
             with open(run_json_path, "r", encoding="utf-8") as f:
                 state = json.load(f)
             if not state.get("confirmed"):
-                return 20, f"run_id={run_id} 尚未用户确认，禁止执行 Step 3（评分）。请先跑 confirm"
+                return 20, f"run_id={run_id} 尚未用户确认"
         except Exception:
             pass
 
-    # new_resumes.json 必须存在
     new_resumes_path = os.path.join(out.runs_dir, run_id, "process", "new_resumes.json")
     if not os.path.isfile(new_resumes_path):
-        return 26, f"当前 run 缺少 process/new_resumes.json：{new_resumes_path}。请先跑 fetch"
+        return 26, f"缺少 process/new_resumes.json：{new_resumes_path}"
 
     return 0, None
 
@@ -92,10 +92,6 @@ def _read_manifest(scoring_dir: str) -> Optional[dict]:
 
 def _ensure_manifest(job_name: str, eid: str, run_id: str,
                      scoring_dir: str) -> tuple[bool, Optional[dict]]:
-    """manifest 不存在时调 prepare_scoring_inputs.py；返回 (ok, manifest)。
-
-    ok=True 时 manifest 非 None；ok=False 时 manifest=None（失败）。
-    """
     manifest = _read_manifest(scoring_dir)
     if manifest is not None:
         return True, manifest
@@ -117,112 +113,146 @@ def _ensure_manifest(job_name: str, eid: str, run_id: str,
     return True, manifest
 
 
-def _find_next(manifest: dict, scoring_dir: str) -> Optional[dict]:
-    """从 manifest 清单 + output 文件状态 找下一位候选人。
+def _candidates_with_status(manifest: dict, scoring_dir: str) -> list[dict]:
+    """返回每位候选人 + output 是否存在 + 是否有效。
 
-    关键：不能只看 manifest entry.status == "pending"；
-    若 output 文件已存在，跳过；只看 output 不存在（无论 manifest status）。
+    每项 schema：
+      {geek_id, name, input_path, output_path, output_abs,
+       has_output, output_valid, validation_error}
     """
-    candidates = manifest.get("candidates", [])
-    for entry in candidates:
+    out = []
+    for entry in manifest.get("candidates", []):
         geek_id = entry.get("geek_id")
-        if not geek_id:
-            continue
         output_rel = entry.get("output_path")
-        if not output_rel:
-            continue
-        output_abs = os.path.normpath(os.path.join(scoring_dir, output_rel))
-        if os.path.isfile(output_abs):
-            continue  # 已评分
-        return {
+        output_abs = os.path.normpath(os.path.join(scoring_dir, output_rel)) if output_rel else None
+        has_output = bool(output_abs and os.path.isfile(output_abs))
+        item = {
             "geek_id": geek_id,
             "name": entry.get("name", ""),
             "input_path": entry.get("input_path"),
             "output_path": output_rel,
             "output_abs": output_abs,
+            "has_output": has_output,
+            "output_valid": False,
+            "validation_error": None,
         }
+        if has_output:
+            try:
+                with open(output_abs, "r", encoding="utf-8") as f:
+                    score = json.load(f)
+                errs = _validate_score(score)
+                if not errs:
+                    item["output_valid"] = True
+                else:
+                    item["validation_error"] = "; ".join(errs)
+            except Exception as e:
+                item["validation_error"] = f"JSON 解析失败：{e}"
+        out.append(item)
+    return out
+
+
+def _validate_score(score: dict) -> list[str]:
+    """复制 collect_llm_scores._validate_score 的最小校验（不引入 import 依赖）。
+
+    校验：必须 dict；必含 name + dims；dims 含 exp/skill/proj/major 且 0-100。
+    """
+    REQUIRED_SCORE_FIELDS = ("name", "dims")
+    REQUIRED_DIM_FIELDS = ("exp", "skill", "proj", "major")
+    errs = []
+    if not isinstance(score, dict):
+        return [f"score 不是 dict 类型：{type(score).__name__}"]
+    if not score.get("name"):
+        errs.append("缺 name 字段")
+    dims = score.get("dims")
+    if not isinstance(dims, dict):
+        errs.append("缺 dims 字段或不是 dict")
+        return errs
+    for k in REQUIRED_DIM_FIELDS:
+        v = dims.get(k)
+        if not isinstance(v, (int, float)):
+            errs.append(f"dims.{k} 不是数字：{v!r}")
+            continue
+        if not (0 <= v <= 100):
+            errs.append(f"dims.{k}={v} 超出 [0, 100]")
+    return errs
+
+
+def _find_next(candidates: list[dict]) -> Optional[dict]:
+    """找 output 不存在的候选人；已存在但 invalid 也跳过（让 collect 报告）。"""
+    for c in candidates:
+        if not c["has_output"]:
+            return c
     return None
 
 
-def _count_remaining(manifest: dict, scoring_dir: str) -> int:
-    """还有几位候选人 output 文件不存在（即 remaining = 待评分数）。"""
-    candidates = manifest.get("candidates", [])
-    n = 0
-    for entry in candidates:
-        output_rel = entry.get("output_path")
-        if not output_rel:
-            continue
-        output_abs = os.path.normpath(os.path.join(scoring_dir, output_rel))
-        if not os.path.isfile(output_abs):
-            n += 1
-    return n
+def _count_remaining(candidates: list[dict]) -> int:
+    return sum(1 for c in candidates if not c["has_output"])
+
+
+def _infer_run_dirs(job_name: str, eid: str, run_id: str) -> tuple[str, str]:
+    """返回 (runs_dir, process_dir) 绝对路径。"""
+    from shared.output_manager import JobOutputManager
+    out = JobOutputManager(job_name, encrypt_job_id=eid, run_id=run_id, lazy=True)
+    runs_dir = out.runs_dir
+    process_dir = os.path.join(runs_dir, run_id, "process")
+    return runs_dir, process_dir
+
+
+def _common_pre_check(job_name: str, eid: str, run_id: str) -> tuple[int, Optional[str], Optional[dict]]:
+    """公共预校验：encrypt_job_id + run_id + confirmed + new_resumes + manifest。
+
+    返回 (exit_code, error_msg, scoring_workspace)
+    - exit_code = 0 且 scoring_workspace 非 None → OK
+    - exit_code != 0 → error_msg 有效
+    """
+    rc, msg = _require_run(job_name, eid, run_id)
+    if rc != 0:
+        return rc, msg, None
+
+    runs_dir, process_dir = _infer_run_dirs(job_name, eid, run_id)
+    scoring_dir = os.path.join(process_dir, "scoring")
+
+    ok_, manifest = _ensure_manifest(job_name, eid, run_id, scoring_dir)
+    if not ok_ or manifest is None:
+        return 26, "manifest.json 仍不存在（prepare 失败或 new_resumes 为空）", None
+
+    candidates = _candidates_with_status(manifest, scoring_dir)
+    return 0, None, {
+        "runs_dir": runs_dir,
+        "process_dir": process_dir,
+        "scoring_dir": scoring_dir,
+        "manifest": manifest,
+        "candidates": candidates,
+    }
 
 
 def find_next_candidate(*, job_name: str, encrypt_job_id: Optional[str],
                          run_id: Optional[str]) -> CommandResult:
-    """C1：找下一位待评分的候选人，返回 (candidate_id, name, input_file, output_file, remaining)。
+    """C1：找下一位候选人。
 
-    状态机：waiting_llm（返回该候选人）/ 没有剩余候选人 → 也返回 waiting_llm
-    且 candidate_id=null（理论上不会发生：剩余=0 时该走 finalize，但 C1 不实现）。
+    当 remaining=0（所有 output 已写盘）→ 返回 status=waiting_llm 但
+    data.candidate_id=null，提示"all outputs ready; run again to trigger finalize"。
     """
     eid = _resolve_encrypt_job_id(encrypt_job_id)
     if not eid:
-        return error(
-            error_obj=UnifiedError(
-                code=ErrorCode.MISSING_ENCRYPT_JOB_ID,
-                message="缺少 encrypt_job_id",
-            ),
-            run_id=run_id, exit_code=ExitCode.GENERIC,
-        )
+        return error(error_obj=UnifiedError(code=ErrorCode.MISSING_ENCRYPT_JOB_ID,
+                                           message="缺少 encrypt_job_id"),
+                     run_id=run_id, exit_code=ExitCode.GENERIC)
     if not run_id:
-        return error(
-            error_obj=UnifiedError(
-                code=ErrorCode.MISSING_RUN_ID,
-                message="缺少 --run-id",
-            ),
-            exit_code=ExitCode.MISSING_RUN_ID,
-        )
+        return error(error_obj=UnifiedError(code=ErrorCode.MISSING_RUN_ID,
+                                           message="缺少 --run-id"),
+                     exit_code=ExitCode.MISSING_RUN_ID)
 
-    rc, msg = _require_run(job_name, eid, run_id)
+    rc, msg, ws = _common_pre_check(job_name, eid, run_id)
     if rc != 0:
-        # 区分 exit code → UnifiedError code
-        if rc == 23:
-            err_code = ErrorCode.RUN_NOT_FOUND
-        elif rc == 24:
-            err_code = ErrorCode.JOB_MISMATCH
-        elif rc == 20:
-            err_code = ErrorCode.AWAITING_CONFIRMATION
-        elif rc == 26:
-            err_code = ErrorCode.INTERNAL
-        else:
-            err_code = ErrorCode.INTERNAL
-        return error(
-            error_obj=UnifiedError(code=err_code, message=msg),
-            run_id=run_id, encrypt_job_id=eid, job_name=job_name,
-            exit_code=ExitCode(rc),
-        )
+        return _map_require_error(rc, msg, run_id, eid, job_name)
 
-    # 定位 scoring dir
-    from shared.output_manager import JobOutputManager
-    out = JobOutputManager(job_name, encrypt_job_id=eid, run_id=run_id, lazy=True)
-    process_dir = os.path.join(out.runs_dir, run_id, "process")
-    scoring_dir = os.path.join(process_dir, "scoring")
+    candidates = ws["candidates"]
+    next_cand = _find_next(candidates)
+    remaining = _count_remaining(candidates)
 
-    # manifest 不存在时跑 prepare
-    ok_, manifest = _ensure_manifest(job_name, eid, run_id, scoring_dir)
-    if not ok_ or manifest is None:
-        return error(
-            error_obj=UnifiedError(
-                code=ErrorCode.INTERNAL,
-                message="manifest.json 仍不存在（prepare 失败或 new_resumes 为空）",
-            ),
-            run_id=run_id, encrypt_job_id=eid, job_name=job_name,
-            exit_code=ExitCode(26),
-        )
-
-    next_cand = _find_next(manifest, scoring_dir)
     if next_cand is None:
-        # 没有待评分候选人：C1 阶段不实现 finalize，提示跑第二次会触发 C2
+        # 所有 output 都存在 → 提示进入 C2 finalize
         return ok(
             status="waiting_llm",
             run_id=run_id, encrypt_job_id=eid, job_name=job_name,
@@ -237,15 +267,15 @@ def find_next_candidate(*, job_name: str, encrypt_job_id: Optional[str],
             next_action="score_candidate_then_repeat",
         )
 
-    remaining = _count_remaining(manifest, scoring_dir)
+    input_path = (os.path.normpath(os.path.join(ws["scoring_dir"], next_cand["input_path"]))
+                  if next_cand.get("input_path") else None)
     return ok(
         status="waiting_llm",
         run_id=run_id, encrypt_job_id=eid, job_name=job_name,
         data={
             "candidate_id": next_cand["geek_id"],
             "name": next_cand["name"],
-            "input_file": os.path.normpath(os.path.join(scoring_dir, next_cand["input_path"]))
-                if next_cand.get("input_path") else None,
+            "input_file": input_path,
             "output_file": next_cand["output_abs"],
             "remaining": remaining,
         },
@@ -253,4 +283,257 @@ def find_next_candidate(*, job_name: str, encrypt_job_id: Optional[str],
     )
 
 
-__all__ = ["find_next_candidate"]
+def finalize_when_ready(*, job_name: str, encrypt_job_id: Optional[str],
+                        run_id: Optional[str]) -> CommandResult:
+    """C2：所有 output 都齐时调 collect + score_resumes 完成评分。
+
+    流程：
+      1) 已有 screening_results.json → 直接返回 scoring_complete（幂等）
+      2) 调 collect_llm_scores.py
+         - collect 失败 → 透传 exit_code（不调 score_resumes）
+         - collect 标记 invalid → 返回该候选人（waiting_llm + validation_error）
+         - collect 标记 missing → 返回该候选人（waiting_llm + note）
+      3) 全部有效 → 调 score_resumes.py
+         - score_resumes 失败 → 透传 exit_code
+         - 成功 → 返回 scoring_complete + scoring_results_file 路径
+    """
+    eid = _resolve_encrypt_job_id(encrypt_job_id)
+    if not eid:
+        return error(error_obj=UnifiedError(code=ErrorCode.MISSING_ENCRYPT_JOB_ID,
+                                           message="缺少 encrypt_job_id"),
+                     run_id=run_id, exit_code=ExitCode.GENERIC)
+    if not run_id:
+        return error(error_obj=UnifiedError(code=ErrorCode.MISSING_RUN_ID,
+                                           message="缺少 --run-id"),
+                     exit_code=ExitCode.MISSING_RUN_ID)
+
+    rc, msg, ws = _common_pre_check(job_name, eid, run_id)
+    if rc != 0:
+        return _map_require_error(rc, msg, run_id, eid, job_name)
+
+    runs_dir = ws["runs_dir"]
+    process_dir = ws["process_dir"]
+    scoring_dir = ws["scoring_dir"]
+    candidates = ws["candidates"]
+
+    # 1) screening_results.json 幂等
+    from shared.output_manager import JobOutputManager
+    out = JobOutputManager(job_name, encrypt_job_id=eid, run_id=run_id, lazy=True)
+    screening_results_path = out.screening_results_path
+    if os.path.isfile(screening_results_path):
+        try:
+            with open(screening_results_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            scored = len(existing.get("candidates", []))
+        except Exception:
+            scored = 0
+        return ok(
+            status="scoring_complete",
+            run_id=run_id, encrypt_job_id=eid, job_name=job_name,
+            data={"scored": scored, "screening_results_file": str(screening_results_path)},
+            next_action="report",
+        )
+
+    # 还有候选人没评分完 → 不是 finalize 时机
+    remaining = _count_remaining(candidates)
+    if remaining > 0:
+        # C2 被显式调但还没齐：返回 waiting_llm + 第一位候选人
+        next_cand = _find_next(candidates)
+        return ok(
+            status="waiting_llm",
+            run_id=run_id, encrypt_job_id=eid, job_name=job_name,
+            data={
+                "candidate_id": next_cand["geek_id"] if next_cand else None,
+                "name": next_cand["name"] if next_cand else None,
+                "input_file": (os.path.normpath(os.path.join(scoring_dir, next_cand["input_path"]))
+                                if next_cand and next_cand.get("input_path") else None),
+                "output_file": next_cand["output_abs"] if next_cand else None,
+                "remaining": remaining,
+                "note": "not all outputs ready; finalize cannot proceed",
+            },
+            next_action="score_candidate_then_repeat",
+        )
+
+    # 2) 调 collect
+    collect_result = run_legacy_cli(
+        "collect_llm_scores",
+        [
+            "--job-name", job_name,
+            "--encrypt-job-id", eid,
+            "--run-id", run_id,
+        ],
+        timeout=60,
+    )
+
+    if collect_result.returncode != 0:
+        better_msg = try_extract_blocked_message(collect_result.stdout)
+        unified = legacy_error(collect_result)
+        if better_msg:
+            unified = UnifiedError(code=unified.code, message=better_msg,
+                                   subprocess_returncode=unified.subprocess_returncode)
+        return error(error_obj=unified,
+                     run_id=run_id, encrypt_job_id=eid, job_name=job_name,
+                     exit_code=ExitCode(collect_result.returncode))
+
+    # 解析 collect stdout JSON
+    collect_payload = None
+    for line in reversed((collect_result.stdout or "").splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                collect_payload = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+    if collect_payload is None:
+        return error(error_obj=UnifiedError(
+            code=ErrorCode.INTERNAL,
+            message="collect 输出无 JSON 可解析",
+        ), run_id=run_id, encrypt_job_id=eid, job_name=job_name,
+            exit_code=ExitCode.INTERNAL)
+
+    invalid_list = collect_payload.get("invalid", []) or []
+    missing_list = collect_payload.get("missing", []) or []
+    merged_count = collect_payload.get("merged_count", 0)
+    merged_file = collect_payload.get("merged_file")
+
+    if invalid_list:
+        # 返回第一位 invalid 候选人；让 LLM 覆盖 output 后再 finalize
+        first = invalid_list[0]
+        out_path = _find_output_path(candidates, first["geek_id"])
+        return ok(
+            status="waiting_llm",
+            run_id=run_id, encrypt_job_id=eid, job_name=job_name,
+            data={
+                "candidate_id": first["geek_id"],
+                "name": first.get("name"),
+                "input_file": _find_input_path(scoring_dir, candidates, first["geek_id"]),
+                "output_file": out_path,
+                "remaining": _count_invalid_or_missing(candidates, invalid_list, missing_list),
+                "validation_error": first.get("errors") or first.get("error"),
+                "note": "invalid output; overwrite output_file with valid score, then run score again",
+            },
+            next_action="score_candidate_then_repeat",
+        )
+
+    if missing_list:
+        # missing 是真正的 output 不存在 → 走 C1 逻辑返回那位候选人
+        first = missing_list[0]
+        return ok(
+            status="waiting_llm",
+            run_id=run_id, encrypt_job_id=eid, job_name=job_name,
+            data={
+                "candidate_id": first["geek_id"],
+                "name": first.get("name"),
+                "input_file": _find_input_path(scoring_dir, candidates, first["geek_id"]),
+                "output_file": _find_output_path(candidates, first["geek_id"]),
+                "remaining": len(missing_list),
+                "note": "missing output; LLM must write score to this path",
+            },
+            next_action="score_candidate_then_repeat",
+        )
+
+    # 3) 全部有效 → 调 score_resumes
+    score_result = run_legacy_cli(
+        "score_resumes",
+        [
+            "--job-name", job_name,
+            "--encrypt-job-id", eid,
+            "--run-id", run_id,
+        ],
+        timeout=600,
+    )
+
+    if score_result.returncode != 0:
+        better_msg = try_extract_blocked_message(score_result.stdout)
+        unified = legacy_error(score_result)
+        if better_msg:
+            unified = UnifiedError(code=unified.code, message=better_msg,
+                                   subprocess_returncode=unified.subprocess_returncode)
+        return error(error_obj=unified,
+                     run_id=run_id, encrypt_job_id=eid, job_name=job_name,
+                     exit_code=ExitCode(score_result.returncode))
+
+    # 成功
+    return ok(
+        status="scoring_complete",
+        run_id=run_id, encrypt_job_id=eid, job_name=job_name,
+        data={
+            "scored": merged_count,
+            "screening_results_file": str(out.screening_results_path),
+        },
+        next_action="report",
+    )
+
+
+def _map_require_error(rc: int, msg: str, run_id: str, eid: str,
+                       job_name: str) -> CommandResult:
+    """_require_run 返回的 rc → CommandResult。"""
+    if rc == 23:
+        code = ErrorCode.RUN_NOT_FOUND
+    elif rc == 24:
+        code = ErrorCode.JOB_MISMATCH
+    elif rc == 20:
+        code = ErrorCode.AWAITING_CONFIRMATION
+    else:
+        code = ErrorCode.INTERNAL
+    return error(
+        error_obj=UnifiedError(code=code, message=msg or "前置校验失败"),
+        run_id=run_id, encrypt_job_id=eid, job_name=job_name,
+        exit_code=ExitCode(rc),
+    )
+
+
+def _find_output_path(candidates: list[dict], geek_id: str) -> Optional[str]:
+    for c in candidates:
+        if c["geek_id"] == geek_id:
+            return c["output_abs"]
+    return None
+
+
+def _find_input_path(scoring_dir: str, candidates: list[dict],
+                     geek_id: str) -> Optional[str]:
+    for c in candidates:
+        if c["geek_id"] == geek_id and c.get("input_path"):
+            return os.path.normpath(os.path.join(scoring_dir, c["input_path"]))
+    return None
+
+
+def _count_invalid_or_missing(candidates, invalid, missing) -> int:
+    bad_geek_ids = {x["geek_id"] for x in invalid} | {x["geek_id"] for x in missing}
+    return sum(1 for c in candidates if c["geek_id"] in bad_geek_ids)
+
+
+# ============================================================
+# 统一入口：score 命令 dispatcher
+# ============================================================
+
+def run_score(*, job_name: str, encrypt_job_id: Optional[str],
+              run_id: Optional[str]) -> CommandResult:
+    """score 命令业务入口；按状态自动选 C1 (协调) 或 C2 (finalize)。
+
+    判断条件：manifest 所有候选人的 output 文件是否都已存在。
+    """
+    eid = _resolve_encrypt_job_id(encrypt_job_id)
+    if not eid:
+        return error(error_obj=UnifiedError(code=ErrorCode.MISSING_ENCRYPT_JOB_ID,
+                                           message="缺少 encrypt_job_id"),
+                     run_id=run_id, exit_code=ExitCode.GENERIC)
+    if not run_id:
+        return error(error_obj=UnifiedError(code=ErrorCode.MISSING_RUN_ID,
+                                           message="缺少 --run-id"),
+                     exit_code=ExitCode.MISSING_RUN_ID)
+
+    rc, msg, ws = _common_pre_check(job_name, eid, run_id)
+    if rc != 0:
+        return _map_require_error(rc, msg, run_id, eid, job_name)
+
+    remaining = _count_remaining(ws["candidates"])
+    if remaining > 0:
+        return find_next_candidate(job_name=job_name,
+                                   encrypt_job_id=eid, run_id=run_id)
+    return finalize_when_ready(job_name=job_name,
+                               encrypt_job_id=eid, run_id=run_id)
+
+
+__all__ = ["run_score", "find_next_candidate", "finalize_when_ready"]
