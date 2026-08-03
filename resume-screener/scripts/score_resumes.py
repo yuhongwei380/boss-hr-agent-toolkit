@@ -78,8 +78,12 @@ import time
 import argparse
 from pathlib import Path
 
-if sys.platform == "win32":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# ⚠️ 2026-08-03 重构：win32 的 sys.stdout reconfigure **不在模块顶层**做。
+# 原因：旧实现 `sys.stdout = io.TextIOWrapper(sys.stdout.buffer, ...)` 会替换
+# sys.stdout 对象，破坏 pytest capture 的 tmpfile（pytest 退出时抛
+# "ValueError: I/O operation on closed file"）。
+# 改为只在 __main__ 入口里 reconfigure；被 import 时不触发副作用。
+# 与 prepare_scoring_inputs.py / collect_llm_scores.py 保持一致。
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from school_tier import lookup as school_lookup

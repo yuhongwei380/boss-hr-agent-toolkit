@@ -6,6 +6,12 @@
 策略：在 conftest 加载阶段（早于任何测试代码 import），把 sys.stdout.encoding
 置为 "utf-8"。这样 school_tier.py 里的 re-wrap 条件（`startswith("utf")`）
 不成立，re-wrap 会被跳过，pytest 的捕获/输出就安全。
+
+⚠️ 2026-08-03 重写：旧实现用 `sys.stdout.reconfigure(encoding="utf-8")`，
+但 pytest 9.x 的 capture 用 tmpfile 包装 sys.stdout；reconfigure 会让 tmpfile
+失效，pytest 退出时抛 `ValueError: I/O operation on closed file`。
+新实现：在子进程启动时已通过环境变量 PYTHONIOENCODING=utf-8 设好编码，
+pytest capture tmpfile 不需要被替换。
 """
 import os
 import sys
@@ -15,16 +21,17 @@ import pytest
 
 
 # 在 conftest 加载时立刻生效,优先于任何测试文件 import
+# 但不动 sys.stdout 对象本身 —— 避免破坏 pytest capture 的 tmpfile。
 if sys.platform == "win32":
-    # 直接给 sys.stdout 替换 encoding（不重建 TextIOWrapper,避免破坏 pytest 的捕获）
-    try:
-        # Python 3.7+ 的 reconfigure 方法
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    except (AttributeError, ValueError):
-        # 某些捕获器不支持 reconfigure,降级处理
+    # 子进程用 subprocess 启动时已被 PYTHONIOENCODING=utf-8 覆盖（见 _baseline.md）。
+    # 这里只做"保险":如果当前 stdout 编码还不是 utf-8，**只改属性**，不调 reconfigure()。
+    if hasattr(sys.stdout, "encoding") and sys.stdout.encoding and not sys.stdout.encoding.lower().startswith("utf"):
         try:
             sys.stdout.encoding = "utf-8"  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    if hasattr(sys.stderr, "encoding") and sys.stderr.encoding and not sys.stderr.encoding.lower().startswith("utf"):
+        try:
             sys.stderr.encoding = "utf-8"  # type: ignore[attr-defined]
         except Exception:
             pass

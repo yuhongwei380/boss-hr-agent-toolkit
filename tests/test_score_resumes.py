@@ -20,11 +20,42 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SCRIPTS = os.path.abspath(os.path.join(_HERE, "..", "resume-screener", "scripts"))
+_SHARED = os.path.abspath(os.path.join(_HERE, "..", "shared"))
 sys.path.insert(0, _SCRIPTS)
+sys.path.insert(0, _SHARED)
 
 import pytest  # noqa: E402
 
 import score_resumes as sr  # noqa: E402
+
+
+@pytest.fixture
+def fake_run(tmp_path):
+    """建一个最小合法 run 目录：runs/<run_id>/process/{new_resumes.json}。
+
+    返回 (job_name, encrypt_job_id, run_id, run_dir)。
+    用法：把 conftest 的 BOSS_HR_OUTPUT_DIR fixture（已把 OUTPUT_ROOT 指向 tmp_path）
+    和这个 fixture 一起，就能直接 main() 跑完整 CLI。
+    """
+    job_name = "车架工程师"
+    encrypt_job_id = "test_encrypt_job_id_abc123"
+    run_id = "2026-01-01_000000"
+    process_dir = tmp_path / encrypt_job_id / "runs" / run_id / "process"
+    process_dir.mkdir(parents=True, exist_ok=True)
+    # score_resumes.main() 跨 run 去重逻辑会从 process/ 读 *_resumes.json，
+    # 用 name→geek_id 反查表兜底。空文件 → 任何 _llm_scores.json 都会被判
+    # 「geek_id 不在当前 run 简历池」拒绝。写两份带 geek_id 的简历即可。
+    (process_dir / "new_resumes.json").write_text(json.dumps([
+        {
+            "name": "测试 A",
+            "_meta": {"encrypt_geek_id": "gid_A_abc", "encrypt_job_id": encrypt_job_id},
+        },
+        {
+            "name": "测试 B",
+            "_meta": {"encrypt_geek_id": "gid_B_def", "encrypt_job_id": encrypt_job_id},
+        },
+    ], ensure_ascii=False), encoding="utf-8")
+    return job_name, encrypt_job_id, run_id, process_dir
 
 
 # ============================================================
@@ -295,18 +326,23 @@ def test_build_meta_basic():
 # 7. CLI main() 端到端
 # ============================================================
 
-def test_main_cli_end_to_end(tmp_path):
-    """模拟一个最小 LLM 评分 JSON 跑完整 CLI，验证输出 schema
+def test_main_cli_end_to_end(tmp_path, fake_run):
+    """模拟一个最小 LLM 评分 JSON 跑完整 CLI，验证输出 schema。
 
     不使用 capsys/capfd fixture（pytest 9.x 在某些环境 capture 不可用），
     直接验证 main() 写出的 result.json 文件结构。
+
+    生产代码 --run-id 必填（数据边界），本测试必须显式传 --run-id。
     """
+    job_name, encrypt_job_id, run_id, _run_dir = fake_run
+
     inp = tmp_path / "scores.json"
     out = tmp_path / "result.json"
 
     inp.write_text(json.dumps([
         {
             "name": "测试 A",
+            "geek_id": "gid_A_abc",  # 显式 geek_id（fake_run 的 process/new_resumes.json 里已登记）
             "school": "辽宁工业大学/车辆工程/本科",
             "work_years": "3 年",
             "match_type": "结构设计",
@@ -317,6 +353,7 @@ def test_main_cli_end_to_end(tmp_path):
         },
         {
             "name": "测试 B",
+            "geek_id": "gid_B_def",
             "school": "野鸡大学/X/本科",
             "work_years": "1 年",
             "match_type": "机械设计",
@@ -334,7 +371,9 @@ def test_main_cli_end_to_end(tmp_path):
             "score_resumes.py",
             "--input", str(inp),
             "--output", str(out),
-            "--job-name", "车架工程师",
+            "--job-name", job_name,
+            "--encrypt-job-id", encrypt_job_id,
+            "--run-id", run_id,  # 【必填】run_id 是数据边界
         ]
         sr.main()
     finally:
@@ -342,10 +381,40 @@ def test_main_cli_end_to_end(tmp_path):
 
     assert out.exists()
     result = json.loads(out.read_text(encoding="utf-8"))
-    assert result["job_name"] == "车架工程师"
+    assert result["job_name"] == job_name
     assert result["summary"]["total"] == 2
     # 两个人应该都被排进某个 tier
     for c in result["candidates"]:
         assert c["tier"] in {"推荐", "待定", "不推荐"}
     # actions 三段式必须存在
     assert set(result["actions"].keys()) == {"recommend", "pending", "reject"}
+
+
+def test_main_cli_missing_run_id_exits(tmp_path, fake_run, capsys):
+    """验证 main() 在 --run-id 缺失时立刻退出（生产代码的硬约束）。
+
+    不降低生产代码 --run-id 必填的要求：本测试只验证 argparse 在缺失
+    必填参数时立即抛 SystemExit(2)，而不是默默跑默认值。
+    """
+    _job_name, encrypt_job_id, _run_id, _run_dir = fake_run
+
+    inp = tmp_path / "scores.json"
+    out = tmp_path / "result.json"
+    inp.write_text("[]", encoding="utf-8")
+
+    old_argv = sys.argv
+    try:
+        sys.argv = [
+            "score_resumes.py",
+            "--input", str(inp),
+            "--output", str(out),
+            "--job-name", "车架工程师",
+            "--encrypt-job-id", encrypt_job_id,
+            # 故意不传 --run-id
+        ]
+        with pytest.raises(SystemExit) as exc_info:
+            sr.main()
+    finally:
+        sys.argv = old_argv
+    # argparse 退出码 = 2（与 v1.1 cli_runner / confirm_run 一致）
+    assert exc_info.value.code == 2
