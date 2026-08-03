@@ -42,6 +42,7 @@ from boss_hr.commands import report as report_cmd
 from boss_hr.commands import confirm as confirm_cmd
 from boss_hr.commands import score as score_cmd
 from boss_hr.commands import fetch as fetch_cmd
+from boss_hr.commands import start as start_cmd
 
 
 def _emit(payload: dict, *, exit_code: int = 0) -> int:
@@ -77,6 +78,7 @@ COMMANDS = {
     "confirm": (confirm_cmd.add_arguments, confirm_cmd.run),
     "score": (score_cmd.add_arguments, score_cmd.run),
     "fetch": (fetch_cmd.add_arguments, fetch_cmd.run),
+    "start": (start_cmd.add_arguments, start_cmd.run),
 }
 
 
