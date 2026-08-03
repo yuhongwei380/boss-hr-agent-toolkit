@@ -15,7 +15,7 @@
 | 起始 tag | `v1.1-skill-stable`（commit `d5bc46c`） |
 | 当前 HEAD | `1e62fb920bc9a8ece15a3b717d03516bbd8a5b0a` |
 | `git status --short` | （空，工作树干净） |
-| 最新完整 pytest | **209 passed in 34.97s**，exit code **0** |
+| 最新完整 pytest | **237 passed in 32.06s**，exit code **0** |
 
 启动方式：
 
@@ -44,10 +44,10 @@ python -m pytest -q -ra --tb=short
 | `score`（转换 + 损坏 JSON） | `tests/cli/test_score_full_flow.py` | 4 | ✅ |
 | `start` | `tests/cli/test_start.py` | 27 | ✅ |
 | `fetch` | `tests/cli/test_fetch.py` | 24 | ✅ |
+| `greet` | `tests/cli/test_greet.py` | 28 | ✅ |
 
-> **已迁移完成**：status / report / confirm / score（C1+C2+full_flow）/ start / fetch = **6 个命令**。
-> **未实现**：`greet`（最后一轮）
-> 业务测试 106 + cli 测试 110（含 start 27）= **209 passed**。
+> **已迁移完成**：status / report / confirm / score（C1+C2+full_flow）/ start / fetch / greet = **7 个命令**（全部完成）。
+> 业务测试 106 + cli 测试 131（含 greet 28）= **237 passed**。
 
 ---
 
@@ -89,6 +89,18 @@ python -m pytest -q -ra --tb=short
 - 成功 data：`{requested_count, listed_count, downloaded_count, failed_count, candidate_list_file, new_resumes_file, failed_resumes_file}`
 - next_action：`score`
 - 退出码：0 / 1 / 2 / 20（未 confirmed）/ 23 / 24 / 26（缺 new_resumes）
+
+### 3.7 `greet`
+- 参数：`--job-name required` `--encrypt-job-id`（env 兜底）`--run-id required`
+  `--only-names`（逗号分隔，可选）`--threshold default=70.0` `--max default=10` `--dry-run`
+- **不暴露**：`--scan-only` / `--skip-scan` / `--scroll-max` / `--no-finish`（内部调试参数）
+- 成功 status：`greet_complete`
+- 成功 data：`{greeted, clicked_unverified, not_found, total, candidates_targeted,
+  dry_run, greet_log_file, no_candidates}`
+- next_action：`done`
+- 退出码：0（含无候选人）/ 1（缺 eid 业务层）/ 2 / 23 / 24 / 子进程真实 rc 透传（int）
+- **不校验 confirmed**（旧 greet 脚本本就无 `is_confirmed()` 守卫，保持一致，不返回 20）
+- 详见 `docs/refactor/unified-cli/greet-baseline.md`（含旧脚本 3 个既有缺陷的记录）
 
 ### 3.6 `start`
 - 参数：位置参数 `<query>`（encryptJobId | jobId | 岗位名，必填）；`--job-name` required；`--encrypt-job-id`（env `BOSS_HR_ENCRYPT_JOB_ID` 兜底）
@@ -234,10 +246,10 @@ v1.1-skill-stable 的业务约束在新 CLI 全部保留（`docs/BEHAVIOR_V1.md`
   5. 验证产物文件（`recommend_geek_ids.json` / `new_resumes.json` / `failed_resumes.json`）
 
 ### 8.2 其他未完成项（按重要性）
-- `greet` 命令迁移（最后一轮）
-- `boss-hr-auto/SKILL.md` 精简（去重；现在文档 + SKILL + 新 CLI 文档并存）
 - 真实全链路 smoke（start → confirm → fetch → score → report → greet，6 步真实 BOSS）
+- `boss-hr-auto/SKILL.md` 精简（去重；现在文档 + SKILL + 新 CLI 文档并存）
 - 安装/发布验证（setup / wheels / 版本号）
+- `auto_greet.py` 的 3 个既有缺陷（见 §9.1）
 - 真实 BOSS 环境 + login 自动化（不是本仓库职责；最终用户做）
 
 ### 8.3 已完成无遗留
@@ -259,15 +271,27 @@ v1.1-skill-stable 的业务约束在新 CLI 全部保留（`docs/BEHAVIOR_V1.md`
 
 | 顺序 | 任务 | 状态 |
 |------|------|------|
-| 1 | `boss-hr greet` | 未开始 |
+| 1 | `boss-hr greet` | ✅ 已完成（本轮；28 个测试，237 passed） |
 | 2 | 真实 `start → confirm → fetch --count 1` smoke（最小链路） | 未开始 |
 | 3 | 完整端到端回归（start → confirm → fetch → score → report → greet） | 未开始 |
 | 4 | 精简 `boss-hr-auto/SKILL.md`（与新 CLI 文档去重） | 未开始 |
 | 5 | 安装和发布验证（setup.py / wheels / 版本号） | 未开始 |
 
-**新会话首个开发任务**：`boss-hr greet`（下一轮 §11 给出验收目标）。
-新会话首个 smoke：步骤 2（最小链路 3 步）。
-新会话第二轮：步骤 3（6 步全链路）+ 步骤 4-5。
+**7 个命令全部迁移完成**。新会话首个任务：步骤 2（最小链路 3 步真实 smoke）。
+
+### 9.1 ⚠️ 迁移中发现的旧脚本既有缺陷（本轮未修，需独立轮次）
+
+`auto_greet.py` 有 3 个既有 bug，详见 `greet-baseline.md` §6。按「无行为变化」
+约束本轮只记录不修：
+
+| # | 缺陷 | 影响 |
+|---|------|------|
+| 1 | `orch.finish()` 缺 `run_id` 实参（`auto_greet.py:756`），签名要求必填 → `TypeError` 被 `except Exception` 吞掉 | 文档声称的「招呼成功自动 finish()」**从未生效**，`run.json.finished` 恒 false |
+| 2 | `auto_greet()` 函数体引用只在 `__main__` 定义的全局 `args`（:744/753/766） | 直接 import 调用必 `NameError` → 新 CLI **必须**走子进程 |
+| 3 | 无高分候选人时 atexit `prune_if_empty()` 删掉**整个 run 目录**（含 job_detail / screening_results） | 仅当 run 内无 `.html` 时触发（report 未跑或失败）；rc 仍为 0 |
+
+> 缺陷 3 已实测复现。新 CLI 已容忍该情况（`no_candidates: true`，不断言
+> greet_log.json 存在），但**根因在旧脚本**，建议后续轮次修复。
 
 ---
 

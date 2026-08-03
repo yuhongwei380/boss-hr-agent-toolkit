@@ -1,0 +1,212 @@
+# -*- coding: utf-8 -*-
+"""boss_hr.application.greet_service — greet 命令业务逻辑。
+
+职责：
+  - 校验 encrypt_job_id / run_id / run 存在（预校验，收敛为 23 / 24）
+  - 通过 adapters/legacy_runner 调 auto_greet.py（子进程）
+  - 读 runs/<run_id>/process/greet_log.json 取 summary
+  - 把结果包装成 CommandResult
+
+不直接调 patchright / 不复制 CDP 扫描 / 倒序招呼 / DOM click 逻辑。
+
+⚠️ 必须走子进程（cli_runner），**不能** `from auto_greet import auto_greet`
+直接调函数：`auto_greet()` 函数体内引用了只在 `if __name__ == '__main__'`
+块里定义的全局 `args`（auto_greet.py:744/753/766），直接调用会在收尾阶段
+抛 NameError。详见 docs/refactor/unified-cli/greet-baseline.md §6.2。
+
+⚠️ greet_log.json 可能不存在：无高分候选人时旧脚本提前 return（rc=0）且
+atexit 的 prune_if_empty() 会删掉整个 run 目录。本模块容忍该文件缺失，
+不断言其存在。详见 greet-baseline.md §6.3。
+"""
+from __future__ import annotations
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Optional
+
+_HERE = Path(__file__).resolve().parent
+_BOSS_HR = _HERE.parent
+_TOOLKIT_ROOT = _BOSS_HR.parent
+sys.path.insert(0, str(_TOOLKIT_ROOT))
+sys.path.insert(0, str(_TOOLKIT_ROOT / "shared"))
+
+from boss_hr.contracts.results import CommandResult, ok, error
+from boss_hr.contracts.errors import ExitCode, ErrorCode, UnifiedError
+from boss_hr.adapters import legacy_runner
+# 重要：用全限定名 `legacy_runner.run_legacy_cli(...)` 而非局部 `run_legacy_cli(...)`；
+# 这样 monkeypatch.setattr("boss_hr.adapters.legacy_runner.run_legacy_cli", ...) 才生效。
+from boss_hr.adapters.legacy_runner import legacy_error, try_extract_blocked_message
+
+
+def _resolve_encrypt_job_id(cli_value: Optional[str]) -> Optional[str]:
+    if cli_value:
+        return cli_value
+    return os.environ.get("BOSS_HR_ENCRYPT_JOB_ID")
+
+
+def _greet_log_path(job_name: str, eid: str, run_id: str) -> str:
+    """算 runs/<run_id>/process/greet_log.json 路径（与旧脚本同款公式）。"""
+    from shared.output_manager import JobOutputManager
+    out = JobOutputManager(job_name, encrypt_job_id=eid, run_id=run_id, lazy=True)
+    return os.path.join(out.runs_dir, run_id, "process", "greet_log.json")
+
+
+def _read_greet_log(path: str) -> Optional[dict]:
+    """读 greet_log.json；不存在 / 损坏都返回 None（调用方按无产物处理）。"""
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _pre_check(job_name: str, eid: str, run_id: str
+               ) -> tuple[int, Optional[str]]:
+    """前置校验：run 存在 + 岗位匹配。返回 (exit_code, error_msg)。
+
+    与 report / fetch 一致：把旧脚本的裸 FileNotFoundError / RuntimeError
+    （都是 rc=1）收敛成统一 CLI 的 23 / 24。
+
+    不校验 confirmed：旧 greet 脚本没有 is_confirmed() 守卫
+    （全仓库只有 recommend_list / recommend_download 有），保持一致不加。
+    """
+    from shared.run_orchestrator import (
+        RunOrchestrator,
+        EXIT_CODE_RUN_NOT_FOUND,
+        EXIT_CODE_RUN_JOB_MISMATCH,
+    )
+    orch = RunOrchestrator(job_name, encrypt_job_id=eid)
+    try:
+        orch.bind_existing_run(run_id)
+    except FileNotFoundError:
+        return EXIT_CODE_RUN_NOT_FOUND, f"run_id={run_id} 在岗位目录下不存在"
+    except RuntimeError as e:
+        return EXIT_CODE_RUN_JOB_MISMATCH, str(e)
+    return 0, None
+
+
+def greet_candidates(*, job_name: str, encrypt_job_id: Optional[str],
+                     run_id: Optional[str], only_names: Optional[str] = None,
+                     threshold: float = 70.0, max_count: int = 10,
+                     dry_run: bool = False) -> CommandResult:
+    """greet 命令业务实现。
+
+    流程：
+      1) 校验 encrypt_job_id / run_id
+      2) 预校验 run 存在 + 岗位匹配（23 / 24）
+      3) 调 auto_greet.py 子进程
+      4) 失败 → 透传 rc
+      5) 成功 → 读 greet_log.json 取 summary（可能不存在 → no_candidates）
+      6) 返回 greet_complete
+    """
+    eid = _resolve_encrypt_job_id(encrypt_job_id)
+    if not eid:
+        return error(
+            error_obj=UnifiedError(
+                code=ErrorCode.MISSING_ENCRYPT_JOB_ID,
+                message="缺少 encrypt_job_id（传 --encrypt-job-id 或设环境变量 BOSS_HR_ENCRYPT_JOB_ID）",
+            ),
+            run_id=run_id, exit_code=ExitCode.GENERIC,  # 1
+        )
+
+    if not run_id:
+        return error(
+            error_obj=UnifiedError(
+                code=ErrorCode.MISSING_RUN_ID,
+                message="缺少 --run-id（run_id 是数据边界，禁止自动选择历史 run）",
+            ),
+            exit_code=ExitCode.MISSING_RUN_ID,  # 2
+        )
+
+    rc, msg = _pre_check(job_name, eid, run_id)
+    if rc != 0:
+        code = ErrorCode.RUN_NOT_FOUND if rc == 23 else ErrorCode.JOB_MISMATCH
+        return error(
+            error_obj=UnifiedError(code=code, message=msg or "前置校验失败"),
+            run_id=run_id, encrypt_job_id=eid, job_name=job_name,
+            exit_code=ExitCode(rc),
+        )
+
+    # 构造子脚本参数。
+    # --only-names 模式下旧脚本自己会把 threshold 置 0、max 置名单长度
+    # （auto_greet.py:821-828），这里只透传原始参数，不重复该逻辑。
+    args_list = [
+        "--job-name", job_name,
+        "--encrypt-job-id", eid,
+        "--run-id", run_id,
+        "--threshold", str(threshold),
+        "--max", str(max_count),
+    ]
+    if only_names:
+        args_list += ["--only-names", only_names]
+    if dry_run:
+        args_list.append("--dry-run")
+
+    result = legacy_runner.run_legacy_cli(
+        "auto_greet",
+        args_list,
+        timeout=1800,  # 招呼逐人节流 3-6s + 扫描，取与 download 同量级
+    )
+
+    if result.returncode != 0:
+        better_msg = try_extract_blocked_message(result.stdout)
+        unified = legacy_error(result)
+        if better_msg:
+            unified = UnifiedError(
+                code=unified.code, message=better_msg,
+                subprocess_returncode=unified.subprocess_returncode,
+            )
+        # 子脚本 rc 可能不在 ExitCode enum 里；用 int 透传避免 ValueError
+        return error(
+            error_obj=unified,
+            run_id=run_id, encrypt_job_id=eid, job_name=job_name,
+            exit_code=result.returncode,
+        )
+
+    # 成功：读 greet_log.json
+    log_path = _greet_log_path(job_name, eid, run_id)
+    greet_log = _read_greet_log(log_path)
+
+    if greet_log is None:
+        # 无高分候选人（旧脚本提前 return，未写日志；run 目录可能已被
+        # prune_if_empty 删除）。见 greet-baseline.md §6.3。
+        return ok(
+            status="greet_complete",
+            run_id=run_id, encrypt_job_id=eid, job_name=job_name,
+            data={
+                "greeted": 0,
+                "clicked_unverified": 0,
+                "not_found": 0,
+                "total": 0,
+                "candidates_targeted": 0,
+                "dry_run": dry_run,
+                "greet_log_file": None,
+                "no_candidates": True,
+            },
+            next_action="done",
+        )
+
+    summary = greet_log.get("summary") or {}
+    results = greet_log.get("results") or []
+    return ok(
+        status="greet_complete",
+        run_id=run_id, encrypt_job_id=eid, job_name=job_name,
+        data={
+            "greeted": int(summary.get("greeted", 0)),
+            "clicked_unverified": int(summary.get("clicked_unverified", 0)),
+            "not_found": int(summary.get("not_found", 0)),
+            "total": int(summary.get("total", len(results))),
+            "candidates_targeted": len(results),
+            "dry_run": dry_run,
+            "greet_log_file": os.path.abspath(log_path),
+            "no_candidates": False,
+        },
+        next_action="done",
+    )
+
+
+__all__ = ["greet_candidates"]
