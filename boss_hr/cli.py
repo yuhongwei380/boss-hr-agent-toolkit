@@ -40,6 +40,7 @@ sys.path.insert(0, os.path.join(_TOOLKIT_ROOT, "shared"))
 from boss_hr.commands import status as status_cmd
 from boss_hr.commands import report as report_cmd
 from boss_hr.commands import confirm as confirm_cmd
+from boss_hr.commands import score as score_cmd
 
 
 def _emit(payload: dict, *, exit_code: int = 0) -> int:
@@ -73,6 +74,7 @@ COMMANDS = {
     "status": (status_cmd.add_arguments, status_cmd.run),
     "report": (report_cmd.add_arguments, report_cmd.run),
     "confirm": (confirm_cmd.add_arguments, confirm_cmd.run),
+    "score": (score_cmd.add_arguments, score_cmd.run),
 }
 
 
