@@ -72,7 +72,7 @@ def get_status(*, job_name: str, encrypt_job_id: str | None,
 
     eid = _resolve_encrypt_job_id(encrypt_job_id)
     if not eid:
-        return 1, {
+        return 1, {  # 与第一轮 status schema 一致：缺 eid rc=1
             "status": "error",
             "command": "status",
             "message": "缺少 encrypt_job_id（传 --encrypt-job-id 或设环境变量 BOSS_HR_ENCRYPT_JOB_ID）",

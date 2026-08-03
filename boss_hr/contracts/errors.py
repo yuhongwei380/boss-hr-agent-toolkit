@@ -24,6 +24,7 @@ from typing import Optional
 
 class ExitCode(IntEnum):
     OK = 0
+    GENERIC = 1  # 参数错误通用（与第一轮 status 缺 eid 保持一致）
     MISSING_RUN_ID = 2
     AWAITING_CONFIRMATION = 20
     RUN_NOT_FOUND = 23

@@ -1,12 +1,26 @@
-"""boss_hr.application.report_service — report 命令业务逻辑。
+# -*- coding: utf-8 -*-
+"""boss_hr.application.confirm_service — confirm 命令业务逻辑。
 
 职责：
-  - 校验 run 存在（预校验，避免子进程抛 FileNotFoundError）
-  - 通过 adapters/legacy_runner 调 generate_html_report.py
-  - 把子进程返回包装成 CommandResult
+  - 校验 encrypt_job_id / run_id
+  - 预校验 run 存在（拦截 FileNotFoundError → 23）
+  - 调 shared/cli_runner.run_python_cli("confirm_run", ...) 复用现有
+    confirm_run.py 业务脚本（不直接编辑 run.json，不写新实现）
+  - 解析子进程 stdout 的 JSON payload 包装成 CommandResult
+
+确认成功 schema：
+  {ok:true, command:"confirm", status:"confirmed", run_id,
+   encrypt_job_id, job_name, data:{confirmed, user_confirmed_at},
+   next_action:"fetch"}
+
+确认失败：
+  {ok:false, command:"confirm", run_id, encrypt_job_id,
+   error:{code, message}}
 """
 from __future__ import annotations
+import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -31,21 +45,35 @@ def _resolve_encrypt_job_id(cli_value: str | None) -> str | None:
     return os.environ.get("BOSS_HR_ENCRYPT_JOB_ID")
 
 
-def generate_report(*, job_name: str, encrypt_job_id: str | None,
-                    run_id: str | None) -> CommandResult:
-    """report 命令业务实现。
+def _read_confirmed(run_dir: str, run_id: str) -> tuple[bool, str | None]:
+    """从 run.json 读 confirmed / user_confirmed_at（不修改）。"""
+    path = os.path.join(run_dir, run_id, "run.json")
+    if not os.path.exists(path):
+        return False, None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return False, None
+    return bool(data.get("confirmed")), data.get("user_confirmed_at")
+
+
+def confirm_run(*, job_name: str, encrypt_job_id: str | None,
+                run_id: str | None) -> CommandResult:
+    """confirm 命令业务实现。
 
     流程：
       1) 校验 encrypt_job_id / run_id
-      2) bind_existing_run 预校验（捕获 FileNotFoundError → 提前 exit 23）
-      3) 调 legacy_runner.run_legacy_cli("generate_html_report", ...)
-      4) 解析子进程 stdout / 退出码 → CommandResult
+      2) bind_existing_run 预校验（捕获 FileNotFoundError → 23 / RuntimeError → 24）
+      3) 调 cli_runner.run_python_cli("confirm_run", [args])
+      4) 解析子进程 stdout 的 JSON payload + exit code → CommandResult
     """
     from shared.run_orchestrator import (
         RunOrchestrator,
         EXIT_CODE_RUN_NOT_FOUND,
         EXIT_CODE_RUN_JOB_MISMATCH,
     )
+    from shared.output_manager import JobOutputManager
 
     eid = _resolve_encrypt_job_id(encrypt_job_id)
     if not eid:
@@ -66,6 +94,7 @@ def generate_report(*, job_name: str, encrypt_job_id: str | None,
             exit_code=ExitCode.MISSING_RUN_ID,  # 2
         )
 
+    # 预校验 run 存在 + encrypt_job_id 匹配
     orch = RunOrchestrator(job_name, encrypt_job_id=eid)
     try:
         bound_run_id = orch.bind_existing_run(run_id)
@@ -88,21 +117,19 @@ def generate_report(*, job_name: str, encrypt_job_id: str | None,
             exit_code=ExitCode(EXIT_CODE_RUN_JOB_MISMATCH),  # 24
         )
 
-    # 调旧脚本
+    # 调旧 confirm_run.py（通过 cli_runner 复用，stdout 隔离）
     result = run_legacy_cli(
-        "generate_html_report",
+        "confirm_run",
         [
             "--job-name", job_name,
             "--encrypt-job-id", eid,
             "--run-id", bound_run_id,
         ],
-        timeout=60,
-        extract_report_path=True,
-        eid=eid, run_id=bound_run_id, job_name=job_name,
+        timeout=30,
     )
 
     if result.returncode != 0:
-        # 把子脚本 blocked JSON 的 message 拿出来（更详细）
+        # 优先用子进程 blocked JSON 的 message；否则用默认
         better_msg = try_extract_blocked_message(result.stdout)
         unified = legacy_error(result)
         if better_msg:
@@ -110,31 +137,26 @@ def generate_report(*, job_name: str, encrypt_job_id: str | None,
                 code=unified.code, message=better_msg,
                 subprocess_returncode=unified.subprocess_returncode,
             )
-        # stderr 写日志（由 cli.py 处理）
         return error(
             error_obj=unified,
             run_id=bound_run_id, encrypt_job_id=eid, job_name=job_name,
-            exit_code=ExitCode(result.returncode),  # 保留子进程退出码
+            exit_code=ExitCode(result.returncode),
         )
 
-    # 成功：report_file 必须真存在
-    if not result.report_file or not os.path.isfile(result.report_file):
-        return error(
-            error_obj=UnifiedError(
-                code=ErrorCode.INTERNAL,
-                message=f"子脚本 rc=0 但报告文件未生成：{result.report_file}",
-            ),
-            run_id=bound_run_id, encrypt_job_id=eid, job_name=job_name,
-            exit_code=ExitCode.INTERNAL,
-        )
+    # 成功：从 run.json 读 confirmed / user_confirmed_at
+    out = JobOutputManager(job_name, encrypt_job_id=eid, run_id=bound_run_id, lazy=True)
+    confirmed, user_confirmed_at = _read_confirmed(out.runs_dir, bound_run_id)
 
     return ok(
-        status="report_ready",
+        status="confirmed",
         run_id=bound_run_id,
         encrypt_job_id=eid, job_name=job_name,
-        data={"report_file": os.path.abspath(result.report_file)},
-        next_action="greet_optional",
+        data={
+            "confirmed": confirmed,
+            "user_confirmed_at": user_confirmed_at,
+        },
+        next_action="fetch",
     )
 
 
-__all__ = ["generate_report"]
+__all__ = ["confirm_run"]
