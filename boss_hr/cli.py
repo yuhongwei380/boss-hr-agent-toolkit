@@ -92,6 +92,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # argparse.Namespace 不持有 subparser 反向引用；commands 的
+    # require_encrypt_job_id(parser, ns) 需要 parser 来调 .error() → rc=2。
+    # 从 subparser action 拿到对应的子 parser 挂上。
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction) and args.command in action.choices:
+            args._parser = action.choices[args.command]
+            break
+    else:
+        args._parser = parser
+
     add_args_fn, run_fn = COMMANDS[args.command]
     result = run_fn(args)
     return _run_command(args.command, result)

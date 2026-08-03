@@ -194,24 +194,23 @@ def test_confirm_missing_run_id_argv(workspace):
 # ============================================================
 
 def test_confirm_missing_encrypt_job_id(workspace, monkeypatch):
+    """缺 --encrypt-job-id（且 env BOSS_HR_ENCRYPT_JOB_ID 也没有）→ argparse rc=2。
+
+    统一行为：缺公开 CLI 必填参数都 rc=2。
+    """
     tmp_path, eid, job_name, target, _other = workspace
-    # 关键：必须在 env 里**不设** BOSS_HR_ENCRYPT_JOB_ID
-    monkeypatch.delenv("BOSS_HR_OUTPUT_DIR", raising=False)  # 不能影响 BOSS_HR_OUTPUT_DIR
-    # 直接传 env 不带 BOSS_HR_OUTPUT_DIR，确保 eid 解析失败
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
            "PYTHONPATH": str(_SHARED)}
-    env.pop("BOSS_HR_ENCRYPT_JOB_ID", None)
-    # 但 CLI 仍要 BOSS_HR_OUTPUT_DIR 指向 tmp_path，所以重设
     env["BOSS_HR_OUTPUT_DIR"] = str(tmp_path)
+    env.pop("BOSS_HR_ENCRYPT_JOB_ID", None)
     proc = subprocess.run(
         [sys.executable, "-X", "utf8", str(_CLI), "confirm",
          "--job-name", job_name, "--run-id", target],
         capture_output=True, env=env, cwd=str(_TOOLKIT_ROOT), timeout=30,
     )
-    assert proc.returncode == 1
-    payload = json.loads(proc.stdout)
-    assert payload["ok"] is False
-    assert payload["error"]["code"] == "MISSING_ENCRYPT_JOB_ID"
+    assert proc.returncode == 2
+    stderr_text = proc.stderr.decode("utf-8", errors="replace") if isinstance(proc.stderr, bytes) else (proc.stderr or "")
+    assert "--encrypt-job-id" in stderr_text
 
 
 # ============================================================

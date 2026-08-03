@@ -124,7 +124,11 @@ def test_status_does_not_modify_any_file(workspace):
 # ============================================================
 
 def test_status_requires_encrypt_job_id(workspace):
-    """缺 --encrypt-job-id 且无环境变量 → exit 1 + 明确错误信息。"""
+    """缺 --encrypt-job-id 且无环境变量 → argparse 报 rc=2（缺必填参数）。
+
+    统一行为：缺任一公开 CLI 必填参数都 rc=2，由 commands/_argparse_helpers
+    统一处理。
+    """
     job_name, _eid, rid, _other, ws = workspace
     proc = _run_cli(
         "status",
@@ -132,10 +136,9 @@ def test_status_requires_encrypt_job_id(workspace):
         "--run-id", rid,
         env_extra={"BOSS_HR_OUTPUT_DIR": str(ws)},
     )
-    assert proc.returncode == 1
-    payload = json.loads(proc.stdout)
-    assert payload["status"] == "error"
-    assert "encrypt_job_id" in payload["message"]
+    assert proc.returncode == 2
+    stderr_text = proc.stderr.decode("utf-8", errors="replace") if isinstance(proc.stderr, bytes) else (proc.stderr or "")
+    assert "--encrypt-job-id" in stderr_text
 
 
 def test_status_requires_run_id(workspace):
