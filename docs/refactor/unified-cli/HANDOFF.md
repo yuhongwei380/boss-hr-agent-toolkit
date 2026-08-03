@@ -42,10 +42,12 @@ python -m pytest -q -ra --tb=short
 | `score`（C1 协调） | `tests/cli/test_score_coordination.py` | 15 | ✅ |
 | `score`（C2 finalize） | `tests/cli/test_score_finalize.py` | 12 | ✅ |
 | `score`（转换 + 损坏 JSON） | `tests/cli/test_score_full_flow.py` | 4 | ✅ |
+| `start` | `tests/cli/test_start.py` | 27 | ✅ |
 | `fetch` | `tests/cli/test_fetch.py` | 24 | ✅ |
 
-> **未实现**：`start`（待办）、`greet`（待办）
-> 注：当前 HEAD `1e62fb9` 已经把 `start` 做完了（27 个测试）。但本交接文档按"当前会话前"的状态记录——`start` 之前**未提交**。**下一轮 start 是新会话的任务**，见 §9-§10。
+> **已迁移完成**：status / report / confirm / score（C1+C2+full_flow）/ start / fetch = **6 个命令**。
+> **未实现**：`greet`（最后一轮）
+> 业务测试 106 + cli 测试 110（含 start 27）= **209 passed**。
 
 ---
 
@@ -88,8 +90,13 @@ python -m pytest -q -ra --tb=short
 - next_action：`score`
 - 退出码：0 / 1 / 2 / 20（未 confirmed）/ 23 / 24 / 26（缺 new_resumes）
 
-### 3.6 全局必填参数行为（前置 commit `4a66574` 修过）
-缺 `--job-name` / `--encrypt-job-id`（且无 env）/ `--run-id` → argparse 报 rc=2。
+### 3.6 `start`
+- 参数：位置参数 `<query>`（encryptJobId | jobId | 岗位名，必填）；`--job-name` required；`--encrypt-job-id`（env `BOSS_HR_ENCRYPT_JOB_ID` 兜底）
+- **不接受 `--run-id`**（argparse unknown → rc=2；start 必须创建新 run）
+- 成功 status：`waiting_user_confirmation`
+- 成功 data：`{job_detail_file: "<绝对路径>", confirmed: false}`
+- next_action：`confirm`
+- 退出码：0 / 1（query 找不到 / 缺 encrypt_job_id 业务层）/ 2（argparse 缺 query / --job-name / 加密后无法 fallback）/ 子进程真实 rc 透传（int，不用 `ExitCode` enum 避免 rc 不在 enum 里抛 `ValueError`）
 
 ---
 
@@ -108,8 +115,8 @@ boss_hr/
 │   ├── report.py
 │   ├── confirm.py
 │   ├── score.py
-│   ├── fetch.py
-│   └── start.py                    # 下一轮实现
+│   ├── start.py                    # ✅ 已实现（commit 1e62fb9）
+│   └── fetch.py
 ├── application/                    # 业务编排；状态校验；返回 CommandResult
 │   ├── __init__.py
 │   ├── status_service.py
@@ -117,7 +124,7 @@ boss_hr/
 │   ├── confirm_service.py
 │   ├── scoring_service.py
 │   ├── fetch_service.py
-│   └── start_service.py            # 下一轮实现
+│   └── start_service.py            # ✅ 已实现（commit 1e62fb9）
 ├── adapters/                       # 旧脚本 / 子进程调用的薄包装
 │   ├── __init__.py
 │   └── legacy_runner.py            # cli_runner.run_python_cli + stdout 解析 + rc 映射
@@ -212,7 +219,6 @@ v1.1-skill-stable 的业务约束在新 CLI 全部保留（`docs/BEHAVIOR_V1.md`
 | 12 | `d7ef86a` | `test: align score CLI tests with explicit run-id contract` | 第一轮：修 pytest 崩溃 + 加 import-safe 测试 |
 
 > **说明**：用户实际开始本会话时 `start` 还未提交（commit #1 在本会话期间完成）。新会话接手时 HEAD 是 `1e62fb9`（含 start commit）。**`start` 实际已经存在**——下一轮"实现 start"是"再确认 start 已经完成"而非"首次实现"。
-
 ---
 
 ## 8. 已知但尚未解决的问题
@@ -249,23 +255,25 @@ v1.1-skill-stable 的业务约束在新 CLI 全部保留（`docs/BEHAVIOR_V1.md`
 
 > 用户指令："本轮只完成 boss-hr start 的审计、实现、测试和提交。"
 > 即**当前会话**只做 `start`（实际已完成，见 §7 注）。剩余任务**给下一会话**：
+> start 在 commit `1e62fb9` 中已完整实现、测试、commit、纳入 209 passed。
 
 | 顺序 | 任务 | 状态 |
 |------|------|------|
-| 1 | `boss-hr start` | ⚠️ **本会话已做**（commit `1e62fb9`）；新会话只需验证 |
-| 2 | `boss-hr greet` | 未开始 |
-| 3 | 完整真实 smoke（start → confirm → fetch → score → report → greet） | 未开始 |
-| 4 | 精简 `boss-hr-auto/SKILL.md` | 未开始 |
+| 1 | `boss-hr greet` | 未开始 |
+| 2 | 真实 `start → confirm → fetch --count 1` smoke（最小链路） | 未开始 |
+| 3 | 完整端到端回归（start → confirm → fetch → score → report → greet） | 未开始 |
+| 4 | 精简 `boss-hr-auto/SKILL.md`（与新 CLI 文档去重） | 未开始 |
 | 5 | 安装和发布验证（setup.py / wheels / 版本号） | 未开始 |
 
-新会话的"第一轮"任务 = `boss-hr start` 验证 + `greet` 实现。
-新会话的"第二轮"任务 = 真实全链路 smoke + 文档精简 + 发布。
+**新会话首个开发任务**：`boss-hr greet`（下一轮 §11 给出验收目标）。
+新会话首个 smoke：步骤 2（最小链路 3 步）。
+新会话第二轮：步骤 3（6 步全链路）+ 步骤 4-5。
 
 ---
 
-## 10. 下一轮 start 的完整验收目标
+## 10. start 验收目标（已完成回看）
 
-> **实际上 start 已经实现**（commit `1e62fb9`，27 个测试）。新会话"start 验证轮"应核对：
+> **start 已完成**（commit `1e62fb9`，27 个测试通过）。本节供新会话"回看"核对。
 
 ### 10.1 行为约束（每条都要验证）
 - ✅ start **不接受** `--run-id`（argparse unknown argument → rc=2）
@@ -321,15 +329,17 @@ git status --short
 # 期望输出: （空）
 
 # 2. 历史与基线
-git log -10 --oneline
-# 期望第一行: 1e62fb9 refactor(cli): add unified start command
+git log -15 --oneline
+# 期望第一行: 1d32a97 docs(cli): add unified CLI refactor handoff
+# 期望第二行: 1e62fb9 refactor(cli): add unified start command
 git diff --stat v1.1-skill-stable HEAD | tail -5
 # 应看到 50+ files changed, 7000+ insertions
 
 # 3. 完整测试
 python -m pytest -q -ra --tb=short
 # 期望: 209 passed, exit 0
-# （或更新数字：start 已 commit 后应保持 209）
+# start 已在 1e62fb9 commit，27 个测试纳入 209。
+# greet 实现后会变成 209 + 25 = 234 左右（暂定）。
 
 # 4. 关键文件存在性
 ls boss_hr/cli.py boss_hr/commands/start.py boss_hr/application/start_service.py tests/cli/test_start.py
