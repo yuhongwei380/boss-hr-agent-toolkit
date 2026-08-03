@@ -27,11 +27,8 @@ import os
 import sys
 import time
 
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError):
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# ⚠️ 2026-08-03 重构：win32 的 sys.stdout reconfigure **不在模块顶层**做。
+# 与 score_resumes.py / prepare_scoring_inputs.py 一致——只在 __main__ 入口 reconfigure。
 
 
 # ============================================================
@@ -199,4 +196,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # win32 控制台中文编码保障（避免 GBK 乱码）；放 __main__ 内确保被 import 时不触发
+    if sys.platform == "win32":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     main()
