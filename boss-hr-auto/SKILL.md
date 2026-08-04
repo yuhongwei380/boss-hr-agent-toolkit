@@ -21,7 +21,7 @@ type: workflow
 
 # BOSS HR 统一筛选流程（v1.1+）
 
-> 入口：`boss-hr` 统一 CLI。下文按步骤顺序调用 7 个公开命令。
+> 入口：`boss-hr` 统一 CLI。下文按步骤顺序调用 8 个公开命令。
 >
 > **本 Skill 是纯文档**。智能体按步骤顺序逐个调用统一命令。
 
@@ -40,10 +40,11 @@ type: workflow
 - 从其他 run 补数据；
 - 自动跳过人工确认门。
 
-## 公开命令（只此 7 个）
+## 公开命令（v1.1.1 起 8 个：含 doctor）
 
 | 命令 | 作用 |
 |---|---|
+| `boss-hr doctor` | **环境健康检查 + 启动辅助**（首次或环境未知时先调） |
 | `boss-hr start` | 创建新 run，停在人工确认门 |
 | `boss-hr confirm` | 把 `confirmed` 翻 true |
 | `boss-hr fetch --count N` | 拉候选人列表 + 下载 N 份简历 |
@@ -57,25 +58,81 @@ type: workflow
 `score_resumes.py` / `generate_html_report.py` / `auto_greet.py` /
 `cli_runner.py` / spec JSON。
 
+## 首次使用流程（v1.1.1 强制）
+
+1. 首次使用或环境未知时，**先**调 `boss-hr doctor`；
+2. `doctor` 返回 `status=ready` 才继续执行 `start`；
+3. `doctor` 返回 `status=action_required` 时：
+   - 按 `remediation` 字段向用户说明（如"启动专用 Edge 并登录 BOSS"）；
+   - **禁止**查看 `boss_hr` 源码；
+   - **禁止**读取历史输出 / `jobs.json` 找 ID；
+   - **禁止**绕过 CLI；
+   - 等用户完成动作后**重新**调 `boss-hr doctor` 验证。
+
+`doctor` 不读 `jobs.json`、不连接业务岗位 API、不创建 run、不写业务输出。
+
+## 岗位解析规则（v1.1.1 强制）
+
+智能体**只**需提供：
+
+- 岗位名称（如 `"线控底盘制动、转向工程师"`）
+- 或 jobId 数字（如 `559622717`）
+- 或完整 encryptJobId（如 `9a7759badfd95d350nFz3d-_F1NX`）
+
+`start` 内部通过 `shared.recruiter_job_catalog.resolve_recruiter_job(query)`
+**实时**调 BOSS 后端岗位目录解析。
+
+**禁止**：
+
+- 读取 `jobs.json` 拿 encryptJobId
+- 从历史 run / `job_detail.json` 找 ID
+- 读取 `state/` 文件
+- 读取历史 HTML 报告
+- 扫描最近 run
+- 读取 `current_run.json`（已废弃）
+
+### 0. 环境预检（v1.1.1 新增）：`boss-hr doctor`
+
+```bash
+# 检查环境
+boss-hr doctor
+
+# 自动启动专用 Edge（带 --remote-debugging-port=9222）
+boss-hr doctor --launch-edge
+```
+
+期望 `status=ready` 才进入 step 1。`status=action_required` 时按
+`error.remediation` 引导用户。
+
 ## 标准流程
 
 ### 1. 开始任务：`boss-hr start`
 
 ```bash
-boss-hr start "<encryptJobId|jobId|岗位名>" \
-  --job-name "<岗位中文名>" \
-  --encrypt-job-id "<id>"
+boss-hr start "<岗位名称 | jobId | encryptJobId>"
+# 可选: --job-name "<BOSS 真名>" --encrypt-job-id "<一致性校验>"
 ```
 
 **start 不接受 `--run-id`**（argparse 拦截，rc=2）。每次 start 必须创建新 run。
+
+start 内部通过 `shared.recruiter_job_catalog.resolve_recruiter_job(query)`
+**实时**调 BOSS 后端岗位目录解析（不读 `jobs.json`）。
 
 **期望返回**：
 
 ```json
 {"ok": true, "command": "start", "status": "waiting_user_confirmation",
  "run_id": "<新 run_id>", "encrypt_job_id": "...", "job_name": "...",
+ "data": {"job_detail_file": "<path>", "confirmed": false,
+          "resolved_from": "live_boss_catalog"},
  "next_action": "confirm"}
 ```
+
+**特殊错误**：
+
+- `JOB_NOT_FOUND`：BOSS 实时目录找不到 query（智能体不应去读 jobs.json）
+- `JOB_AMBIGUOUS`：返回 `data.candidates` 让用户精确指定 encryptJobId
+- `JOB_ID_MISMATCH`：用户传的 `--encrypt-job-id` 与实时解析不一致
 
 **拿到 run_id 后立即停下**。向用户说明：
 
@@ -194,14 +251,25 @@ boss-hr status --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 
 ## 错误处理
 
-| 规则 | 说明 |
-|---|---|
-| 非零退出码立即停止 | 不要再发命令 |
-| 把统一 JSON 的 `error` 字段告诉用户 | 不要私自重试或忽略 |
-| 不绕过错误去读历史产物 | run.json / screening_results / greet_log 等 |
-| 不手工修改 run.json | 写 `confirmed` / `finished` 是自动脚本的职责 |
-| 不调用旧脚本进行补救 | 旧脚本仅作为 `boss_hr` 内部实现 |
+统一 CLI 返回非零退出码时：
 
-常见退出码：`1`（缺 `encrypt_job_id` 业务层）/ `2`（argparse 缺必填）/
+1. **先**读取 `error.code`：
+   - `EDGE_NOT_FOUND` / `CDP_NOT_RUNNING` / `CDP_CONNECT_FAILED` →
+     让用户按 `remediation` 启动 Edge / 重连
+   - `BOSS_LOGIN_REQUIRED` → 让用户在专用 Edge 中扫码登录
+   - `BOSS_PAGE_REQUIRED` → 让用户打开 BOSS 招聘者页面
+   - `JOB_NOT_FOUND` / `JOB_AMBIGUOUS` / `JOB_ID_MISMATCH` → 按
+     `data.candidates` 或 `remediation.instructions` 重新提供 query
+2. 检查 `error.recoverable`：若 `true` 才有可执行恢复路径
+3. 按 `error.next_action` / `error.remediation` 引导用户
+
+**禁止**：
+
+- 读 `boss_hr` 源码
+- 直接调用旧业务脚本（`boss_jd.py` / `auto_greet.py` 等）
+- 用历史 JSON（`jobs.json` / `run.json` / `job_detail.json`）绕过错误
+- 把 run 状态（`confirmed` / `finished`）手工改写
+
+常见退出码：`1`（业务层）/ `2`（argparse 缺必填）/
 `20`（未 confirm 跑 fetch）/ `23`（run 不存在）/ `24`（run 与岗位不匹配）/
 `26`（缺输入文件）/ `27`（缺输出文件）。
