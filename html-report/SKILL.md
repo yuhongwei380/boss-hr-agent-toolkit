@@ -3,7 +3,9 @@ name: html-report
 description: |
   生成美观的简历筛选 HTML 报告。接受 resume-screener 输出的 screening_results.json，渲染候选人排名、5 维度评分进度条、评分依据、行动建议。
 
-  **本 Skill 是 boss-hr-auto 编排流程的子步骤（Step 4），由 boss-hr-auto 在评分完成后调用，不应作为入口 Skill 直接加载。**
+  **本 Skill 不是工作流入口**。通用智能体应只通过
+  [boss-hr-auto](../boss-hr-auto/SKILL.md) → 统一 CLI `boss-hr report` 调用。
+  本文档保留作为：HTML 报告渲染实现参考 / 模板说明 / 内部脚本接口文档。
 
   **唯一方案**：通用 schema 渲染 + LLM 自由填写的 highlights/concerns/advice 直接展示。任意岗位通用。
 ---

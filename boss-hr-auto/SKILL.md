@@ -173,16 +173,35 @@ boss-hr status --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | 11 | 禁止 continue / batch / 多批累计 |
 | 12 | 禁止为测试而降低阈值、篡改评分 |
 
-## 错误处理速查
+## 状态处理
 
-| 命令 | rc | 含义 |
+每个命令返回的 `status` 字段决定下一步动作：
+
+| 返回 status | 含义 | 智能体动作 |
 |---|---|---|
-| 0 | 0 | 成功 |
-| 1 | 1 | 缺 `encrypt_job_id`（业务层） |
-| 2 | 2 | argparse 缺必填（`--job-name` / `--encrypt-job-id` / `--run-id`） |
-| 23 | 23 | run 不存在 |
-| 24 | 24 | run 与岗位不匹配 |
-| 26 | 26 | 缺输入文件（`new_resumes.json` / `_llm_scores.json`） |
-| 27 | 27 | 缺输出文件（`screening_results.json`） |
+| `waiting_user_confirmation` | start 完成，等用户回复"继续" | **停下**，告知用户去 BOSS 推荐牛人页面调整筛选条件 |
+| `confirmed` | confirm 完成 | 进入 fetch |
+| `candidates_fetched` | fetch 完成 | 进入 score 循环 |
+| `waiting_llm` | score 需要 LLM 评一位 | 读 input_file、评、写 output_file、**再次调** `boss-hr score` |
+| `scoring_complete` | 评分收尾完成 | 进入 report |
+| `report_ready` | HTML 报告已生成 | 把 `report_file` 告诉用户；**不**自动 greet |
+| `greet_complete` | 本次 greet 命令结束 | 任务结束 |
+| （任意 `ok=false`） | 错误 | 见下方错误处理 |
 
-统一 CLI stdout 始终是单行 JSON。退出码语义保留旧脚本契约（不归一化）。
+**重要**：`next_action="done"` 只表示"当前 CLI 工作流无下一项自动动作"，
+**不等于** `run.json.finished=true`。只有 `maybe_finish()` 在 `greeted>=1`
+且 `orch.finish(run_id=...)` 成功时被设置 `run.json.finished=true`。
+
+## 错误处理
+
+| 规则 | 说明 |
+|---|---|
+| 非零退出码立即停止 | 不要再发命令 |
+| 把统一 JSON 的 `error` 字段告诉用户 | 不要私自重试或忽略 |
+| 不绕过错误去读历史产物 | run.json / screening_results / greet_log 等 |
+| 不手工修改 run.json | 写 `confirmed` / `finished` 是自动脚本的职责 |
+| 不调用旧脚本进行补救 | 旧脚本仅作为 `boss_hr` 内部实现 |
+
+常见退出码：`1`（缺 `encrypt_job_id` 业务层）/ `2`（argparse 缺必填）/
+`20`（未 confirm 跑 fetch）/ `23`（run 不存在）/ `24`（run 与岗位不匹配）/
+`26`（缺输入文件）/ `27`（缺输出文件）。

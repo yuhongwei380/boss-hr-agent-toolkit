@@ -3,10 +3,12 @@ name: boss-recommend-downloader
 description: |
   从 BOSS 推荐牛人页面拉候选人列表 + 下载完整在线简历。
 
-  **本 Skill 是 boss-hr-auto 编排流程的子步骤（Step 2），由 boss-hr-auto 在确认门通过后调用，不应作为入口 Skill 直接加载。**
+  **本 Skill 不是工作流入口**。通用智能体应只通过
+  [boss-hr-auto](../boss-hr-auto/SKILL.md) → 统一 CLI `boss-hr fetch` 调用。
+  本文档保留作为：业务实现参考 / 旧脚本内部接口 / CDP 行为说明。
 
-  **触发场景**：
-  - boss-hr-auto 工作流的 Step 2（拉候选人列表 + 下载简历）
+  **触发场景**（**内部实现参考**，不要直接调用）：
+  - boss-hr fetch 内部经 cli_runner 调 recommend_list + recommend_download
 
   **不触发场景**：
   - 从沟通/互动页面下载简历（用 boss-resume-downloader，本项目未提供）

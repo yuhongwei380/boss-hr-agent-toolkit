@@ -3,7 +3,9 @@ name: boss-job-detail
 description: |
   通过 CDP 浏览器提取 BOSS 直聘岗位完整 JD（职责、要求等）。
 
-  **本 Skill 是 boss-hr-auto 编排流程的子步骤（Step 1），通常在 boss-hr-auto 工作流中调用，不应作为入口 Skill 直接加载。**
+  **本 Skill 不是工作流入口**。通用智能体应只通过
+  [boss-hr-auto](../boss-hr-auto/SKILL.md) → 统一 CLI `boss-hr start` 调用。
+  本文档保留作为：业务实现参考 / boss_jd 内部接口 / CDP 行为说明。
 ---
 
 # BOSS 直聘岗位 JD 提取

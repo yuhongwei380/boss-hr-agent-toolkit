@@ -1,9 +1,11 @@
 ---
 name: resume-screener
 description: |
-  简历筛选与评分系统（boss-hr-auto 工作流的 Step 3）。LLM 评 4 维度最终分（exp/skill/proj/major）+ 脚本查 school_tier 校准 edu + 公式重算 total。
+  简历筛选与评分系统的**实现参考**。LLM 评 4 维度最终分（exp/skill/proj/major）+ 脚本查 school_tier 校准 edu + 公式重算 total。
 
-  **本 Skill 是 boss-hr-auto 编排流程的子步骤，通常由 boss-hr-auto 在 Step 3 阶段调用，不应作为入口 Skill 直接加载。**
+  **本 Skill 不是工作流入口**。通用智能体应只通过
+  [boss-hr-auto](../boss-hr-auto/SKILL.md) → 统一 CLI `boss-hr score` 调用。
+  本文档保留作为：评分规则参考 / LLM 提示词片段来源 / 算法实现文档。
 
   **唯一方案**：5 维度 weighted 求和（edu 25% / exp 25% / skill 25% / proj 15% / major 10%），Tier 阈值 ≥70 推荐 / 60-69 待定 / <60 不推荐。
 ---

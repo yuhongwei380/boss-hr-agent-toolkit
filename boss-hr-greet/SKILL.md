@@ -3,10 +3,12 @@ name: boss-hr-greet
 description: |
   BOSS 直聘 HR 工具包 · 「自动打招呼」。给已打分的高分候选人（或精准点名的候选人）自动点击 BOSS 打招呼按钮，模拟真人操作。
 
-  **触发场景**：
-  - 主流程跑完后自动招呼 ≥70 推荐 tier 的候选人（boss-hr-auto Step 5 自动调）
-  - 单独招呼已有点名候选人（`--only-names`）
-  - 给评分后某几个特定候选人补招呼
+  **本 Skill 不是工作流入口**。通用智能体应只通过
+  [boss-hr-auto](../boss-hr-auto/SKILL.md) → 统一 CLI `boss-hr greet` 调用。
+  本文档保留作为：业务实现参考 / auto_greet 内部接口 / CDP 行为说明。
+
+  **触发场景**（**内部实现参考**，不要直接调用）：
+  - boss-hr greet 内部经 cli_runner 调 auto_greet
 
   **核心设计**：基于 `state/geek_positions.json` 位置表 + 按 doc_y **倒序招呼**，配合 `frame.evaluate('button.click()')` 直接调 DOM click（不走 page.mouse.click 算坐标），从根上避免"点错位置打开简历详情"。
 type: workflow
