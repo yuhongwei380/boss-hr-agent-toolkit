@@ -54,6 +54,46 @@ def log(out, msg):
         f.write(line + '\n')
 
 
+def note_skip_if_unsaved(out, saved: bool):
+    """异常退出钩子：未写出 greet_log.json 时仅记日志，不删任何文件。
+
+    修复（2026-08-04）：之前的实现会调 output.prune_if_empty()，只要
+    run_dir 里没有 .html 报告就 rmtree 整个目录 — 误删 run.json /
+    job_detail.json / screening_results.json / scoring/ 等业务数据。
+
+    本函数是 auto_greet 的"atexit 钩子"的唯一允许操作：
+      - 写一行 run_log 提示本次没产出 greet_log.json
+      - 永不删除 run_dir 或其中任何文件
+      - 永不依赖"目录里恰好有 HTML"作为保留条件
+      - 幂等：同一次进程内重复调用最多写一次（用 sentry 文件避免 atexit 多注册）
+
+    Args:
+        out: JobOutputManager 实例（仅用其 run_dir / run_log_path）。
+        saved: True 表示本次成功写出 greet_log.json（跳过提示）。
+
+    Returns:
+        bool: True 表示本次写入了提示；False 表示之前已写或已 saved。
+    """
+    if saved:
+        return False
+    # 幂等：用一个 sentry 文件防止 atexit 重复触发时多次写日志
+    sentry = os.path.join(out.run_dir, ".greet_skip_noted")
+    try:
+        if os.path.isfile(sentry):
+            return False
+        with open(out.run_log_path, 'a', encoding='utf-8') as f:
+            f.write(
+                f"[{time.strftime('%H:%M:%S')}] ⚠️  本次 greet 未产生 greet_log.json；"
+                f"run_dir 完整保留: {out.run_dir}\n"
+            )
+        # 写 sentry 标记（不写在 run_log 里以免被业务清理误删）
+        with open(sentry, 'w', encoding='utf-8') as f:
+            f.write("noted\n")
+        return True
+    except Exception:
+        return False
+
+
 def load_high_score_candidates(job_dir, run_id, score_threshold, only_names=None):
     """从指定 run 的 process/screening_results.json 读高分候选。
 
@@ -562,14 +602,20 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
     run_id = orch.bind_existing_run(run_id)
     output.run_id = run_id
 
-    # 异常护栏：脚本若异常退出且没写 greet_log.json，自动清 run_dir
+    # 异常护栏：脚本若异常退出且没写 greet_log.json，仅记日志；绝不删 run_dir。
+    # 修复（2026-08-04）：之前的 atexit 会调 output.prune_if_empty()，
+    # 该方法只要 run_dir 里没有 .html 报告就 rmtree 整个目录 — 会误删
+    # run.json / job_detail.json / screening_results.json / scoring/ 等业务数据。
+    # greet 是 Step 5，所有业务目录已被上游脚本（boss_jd / score / report）建好，
+    # greet 没资格决定 run 是否"空"。本次 greet 唯一可能新增的是 greet_log.json，
+    # 缺它就只是没工作成果，绝不是"run 是空的"。
     _SAVED = False
 
-    def _auto_prune():
-        if not _SAVED and output.prune_if_empty():
-            log(output, f'⚠️  本次 run 未产生 greet_log.json，已清理: {output.run_dir}')
+    def _note_skip():
+        nonlocal _SAVED
+        note_skip_if_unsaved(output, _SAVED)
 
-    atexit.register(_auto_prune)
+    atexit.register(_note_skip)
 
     output.ensure_run_dir()
     run_id = output.run_id
