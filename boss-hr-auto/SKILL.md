@@ -71,8 +71,16 @@ type: workflow
 4. 未登录 → 自动打开 BOSS 招聘者登录页，轮询等待（默认 20 秒）。
 5. 用户在专用 Edge 窗口内扫码登录 → 轮询命中后继续 start。
 6. 超时仍未登录 → 返回 `status=waiting_user_login`（**不是错误**），
-   `next_action=retry_same_command`，**不创建 run**。智能体停下，告诉
-   用户"已在专用 Edge 中打开登录页，请登录后回复“好了”重试同一条 start"。
+   `next_action=retry_same_command`，**不创建 run**。智能体**直接**告诉用户：
+
+   > 已为你打开专用 Edge，请在浏览器中扫码登录 BOSS 招聘者后台。
+   > 完成后回复"好了"，我会继续当前任务。
+
+   然后**立即停止**。如果 `data.login_page_opened=false`，智能体必须把
+   message 中的"已为你打开"改口为"请在专用 Edge 中手动打开
+   https://www.zhipin.com/web/chat/recommend 登录"，不能伪称已打开。
+
+   用户回复"好了" → 智能体**重新执行完全相同的 `boss-hr start` 命令**（不传任何新参数）。
 
 `doctor` 仍是独立诊断工具，但**不再是 start 的必经前置**。仅当：
 
