@@ -271,27 +271,31 @@ v1.1-skill-stable 的业务约束在新 CLI 全部保留（`docs/BEHAVIOR_V1.md`
 
 | 顺序 | 任务 | 状态 |
 |------|------|------|
-| 1 | `boss-hr greet` | ✅ 已完成（本轮；28 个测试，237 passed） |
-| 2 | 真实 `start → confirm → fetch --count 1` smoke（最小链路） | 未开始 |
-| 3 | 完整端到端回归（start → confirm → fetch → score → report → greet） | 未开始 |
-| 4 | 精简 `boss-hr-auto/SKILL.md`（与新 CLI 文档去重） | 未开始 |
-| 5 | 安装和发布验证（setup.py / wheels / 版本号） | 未开始 |
+| 1 | `boss-hr greet` | ✅ 已完成（`bcd6e94`，28 个测试） |
+| 2 | 真实 `start → confirm → fetch --count 1` smoke（最小链路） | ✅ 已通过（2026-08-04，见 `real-smoke-2026-08-04.md`） |
+| 3 | 完整端到端回归（start → confirm → fetch → score → report → greet） | ⚠️ 部分通过 — score / report / 0-candidates greet 真实路径已通过；**真实 ≥1 个 ≥70 分候选人的 greet 点击发送尚未验证**（详见 `real-smoke-2026-08-04.md` §7） |
+| 4 | 精简 `boss-hr-auto/SKILL.md`（与新 CLI 文档去重） | ✅ 已完成 |
+| 5 | 安装和发布验证（setup.py / wheels / 版本号） | ✅ 已完成（editable install + 项目外 cwd + 7 命令边界） |
 
-**7 个命令全部迁移完成**。新会话首个任务：步骤 2（最小链路 3 步真实 smoke）。
+**7 个命令全部迁移完成 + 真实 smoke 通过（含 0 候选人安全路径）**。
+剩余唯一未验证的真实业务路径：存在 ≥70 分候选人时浏览器实际点击发送
+→ `greeted >= 1` → `run.json.finished = true`。
 
-### 9.1 ⚠️ 迁移中发现的旧脚本既有缺陷（本轮未修，需独立轮次）
+### 9.1 ⚠️ 迁移中发现的旧脚本既有缺陷
 
-`auto_greet.py` 有 3 个既有 bug，详见 `greet-baseline.md` §6。按「无行为变化」
-约束本轮只记录不修：
-
-| # | 缺陷 | 影响 |
+| # | 缺陷 | 状态 |
 |---|------|------|
-| 1 | `orch.finish()` 缺 `run_id` 实参（`auto_greet.py:756`），签名要求必填 → `TypeError` 被 `except Exception` 吞掉 | 文档声称的「招呼成功自动 finish()」**从未生效**，`run.json.finished` 恒 false |
-| 2 | `auto_greet()` 函数体引用只在 `__main__` 定义的全局 `args`（:744/753/766） | 直接 import 调用必 `NameError` → 新 CLI **必须**走子进程 |
-| 3 | 无高分候选人时 atexit `prune_if_empty()` 删掉**整个 run 目录**（含 job_detail / screening_results） | 仅当 run 内无 `.html` 时触发（report 未跑或失败）；rc 仍为 0 |
+| 1 | `orch.finish()` 缺 `run_id` 实参（`auto_greet.py:756`） | ✅ **已修复** `ad243ad` — `maybe_finish()` 显式传 run_id，异常不静默 |
+| 2 | `auto_greet()` 函数体引用只在 `__main__` 定义的全局 `args`（:744/753/766） | ⚠️ **保留**（不动 boss_jd 主体），新 CLI 走 `cli_runner` 子进程规避 |
+| 3 | 无高分候选人时 atexit `prune_if_empty()` 删掉**整个 run 目录** | ✅ **已修复** `edc6959` — `note_skip_if_unsaved()` 只写日志 + sentry，永不删文件；`tests/test_auto_greet_skip_hook.py` 11 例 |
 
-> 缺陷 3 已实测复现。新 CLI 已容忍该情况（`no_candidates: true`，不断言
-> greet_log.json 存在），但**根因在旧脚本**，建议后续轮次修复。
+### 9.2 已修复的 `auto_greet` 缺陷的回归覆盖
+
+| 修复 | 测试文件 | 例数 |
+|---|---|---|
+| `edc6959` prune 防护 | `tests/test_auto_greet_skip_hook.py` | 11 |
+| `ad243ad` finish 显式 run_id | `tests/test_auto_greet_maybe_finish.py` | 12 |
+| **合计** | | **23** |
 
 ---
 
