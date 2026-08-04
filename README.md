@@ -3,7 +3,11 @@
 > [!NOTE]
 > 由 **7 个 AI 智能体 Skill** 组成，基于 patchright + CDP 直连真实 Edge 浏览器（共享 wt2/zp_at/bst cookie），实现 BOSS 直聘简历筛选的**全流程自动化**：从岗位到可视化报告，一键搞定。
 >
+> **统一入口 CLI `boss-hr`**：所有 Agent / 用户通过 [`boss-hr` 命令](docs/CLI_WORKFLOW.md)（`boss-hr start / confirm / fetch / score / report / greet / status`）调用本工具包。**禁止直接调用底层脚本**。详见 [`boss-hr-auto/SKILL.md`](boss-hr-auto/SKILL.md)。
+>
 > **自包含**：不依赖第三方 BOSS CLI。所有 BOSS HTTP 调用走浏览器内 fetch（自动带 cookie + TLS 指纹），岗位查询走 `shared/recruiter_job_catalog.py`，登录检测走 `shared/cdp_preflight.py`。
+>
+> **当前发布形态**：**GitHub 源码工具包 + editable install**（`pip install -e .`）。**不是**独立 wheel，**不**依赖移动源码后仍能运行。移动源码后必须重新 `pip install -e .` 才能继续使用 `boss-hr` 命令。
 
 <p align="center">
   <img alt="skills" src="https://img.shields.io/badge/skills-7%20agents-blue">
@@ -19,13 +23,67 @@
 - [✨ 这是什么](#-这是什么)
 - [🎯 核心能力](#-核心能力)
 - [🧩 技能一览与工作流](#-技能一览与工作流)
-- [🚀 快速开始](#-快速开始)
+- [🚀 快速开始](#-快速开始-cli-工作流)
 - [🧠 评分系统](#-评分系统)
 - [🛡️ 安全与风控](#️-安全与风控)
 - [📂 项目结构](#-项目结构)
 - [📤 输出文件](#-输出文件)
 - [⚙️ 环境变量](#️-环境变量)
 - [🔗 相关链接](#-相关链接)
+
+---
+
+## 🚀 快速开始（CLI 工作流）
+
+**前置**：Windows + Python 3.10+ + Edge 以 `--remote-debugging-port=9222` 启动 +
+招聘者扫码登录 + `pip install -e .` 安装本工具包。
+
+```bash
+git clone https://github.com/<owner>/boss-hr-agent-toolkit
+cd boss-hr-agent-toolkit
+python -m pip install -e .
+
+# 验证安装
+boss-hr --help          # 应只列 7 个公开命令
+python -m boss_hr --help # 等价入口
+```
+
+完整 7 命令工作流（详见 [docs/CLI_WORKFLOW.md](docs/CLI_WORKFLOW.md)）：
+
+```bash
+# 1. 创建新 run（停在人工确认门）
+boss-hr start "<encryptJobId|jobId|岗位名>" \
+  --job-name "<岗位名>" --encrypt-job-id "<id>"
+
+# → status=waiting_user_confirmation，run_id=...
+# → 智能体停下，告知用户在 BOSS 推荐牛人页面调整筛选条件
+
+# 用户回复"继续"后：
+# 2. confirm + fetch
+boss-hr confirm --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
+boss-hr fetch   --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>" --count N
+
+# 3. score 循环（LLM 评一位 → 再调一次相同 score → scoring_complete）
+boss-hr score   --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
+# → 读返回的 input_file、按 resume-screener/SKILL.md 评 4 维度（不评 edu）、
+#   写 output_file、再调一次相同的 score
+boss-hr score   --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
+# → status=scoring_complete
+
+# 4. report
+boss-hr report  --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
+
+# 5.（可选 + 用户明确批准时）greet — 这是**真实写操作**
+boss-hr greet   --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
+
+# 6. 任意时点查看当前 run 状态
+boss-hr status  --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
+```
+
+> ⚠️ **当前限制（GitHub 首版）**：
+> - 不支持 `continue` / `batch` / 多批累计
+> - 真实 `greet` 成功点击（≥70 分候选人实际点击发送）尚未完成受控验证
+> - 仅在 Windows 上完整验证过；macOS / Linux 需自测
 
 ---
 
