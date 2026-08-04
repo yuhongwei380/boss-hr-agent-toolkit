@@ -45,6 +45,17 @@ class ErrorCode(str, Enum):
     INTERNAL = "INTERNAL"
     UNKNOWN_COMMAND = "UNKNOWN_COMMAND"
 
+    # v1.1.1 新增：浏览器环境 / 岗位实时解析
+    EDGE_NOT_FOUND = "EDGE_NOT_FOUND"
+    CDP_NOT_RUNNING = "CDP_NOT_RUNNING"
+    CDP_CONNECT_FAILED = "CDP_CONNECT_FAILED"
+    BOSS_LOGIN_REQUIRED = "BOSS_LOGIN_REQUIRED"
+    BOSS_PAGE_REQUIRED = "BOSS_PAGE_REQUIRED"
+    JOB_NOT_FOUND = "JOB_NOT_FOUND"
+    JOB_AMBIGUOUS = "JOB_AMBIGUOUS"
+    JOB_ID_MISMATCH = "JOB_ID_MISMATCH"
+    EDGE_LAUNCH_FAILED = "EDGE_LAUNCH_FAILED"
+
 
 @dataclass(frozen=True)
 class UnifiedError:
@@ -52,11 +63,14 @@ class UnifiedError:
     code: ErrorCode
     message: str
     subprocess_returncode: Optional[int] = None
+    recoverable: Optional[bool] = None  # v1.1.1: True 表示有可执行恢复路径
 
     def to_dict(self) -> dict:
         out: dict = {"code": self.code.value, "message": self.message}
         if self.subprocess_returncode is not None:
             out["subprocess_returncode"] = self.subprocess_returncode
+        if self.recoverable is not None:
+            out["recoverable"] = self.recoverable
         return out
 
 

@@ -17,7 +17,8 @@ class CommandResult:
     成功：
       ok=True, status="<阶段名>", run_id, data={...}, next_action="<下一动作>"
     失败：
-      ok=False, error=UnifiedError(...)（含 code/message/可选 subprocess_returncode）
+      ok=False, error=UnifiedError(...)（含 code/message/recoverable/
+        subprocess_returncode），可选 next_action + remediation
 
     命令名（status / report / confirm ...）由调用方在 emit 时加上，不放进 result。
     """
@@ -31,6 +32,7 @@ class CommandResult:
     message: Optional[str] = None
     exit_code: ExitCode = ExitCode.OK
     error: Optional[UnifiedError] = None
+    remediation: Optional[dict] = None  # {command, instructions: [...]}
 
     def to_dict(self, command: str) -> dict:
         """序列化 JSON（去掉 exit_code；status 命令 schema 略不同）。"""
@@ -61,10 +63,19 @@ class CommandResult:
             if self.encrypt_job_id is not None:
                 payload["encrypt_job_id"] = self.encrypt_job_id
             if self.error is not None:
-                payload["error"] = self.error.to_dict()
+                err_dict = self.error.to_dict()
+                # v1.1.1: 把 next_action + remediation 提到 error 顶层
+                if self.next_action:
+                    err_dict["next_action"] = self.next_action
+                if self.remediation:
+                    err_dict["remediation"] = self.remediation
+                payload["error"] = err_dict
             else:
                 payload["error"] = {"code": ErrorCode.INTERNAL.value,
                                     "message": self.message or "未知错误"}
+            # v1.1.1: 失败时也带 data（如 JOB_AMBIGUOUS 的 candidates）
+            if self.data:
+                payload["data"] = self.data
             return payload
 
 
@@ -87,7 +98,10 @@ def ok(*, status: str, run_id: str | None = None,
 
 def error(*, error_obj: UnifiedError, run_id: str | None = None,
           encrypt_job_id: str | None = None, job_name: str | None = None,
-          exit_code: ExitCode | None = None) -> CommandResult:
+          exit_code: ExitCode | None = None,
+          remediation: Optional[dict] = None,
+          next_action: Optional[str] = None,
+          data: Optional[dict] = None) -> CommandResult:
     if exit_code is None:
         # 简单映射（UnifiedError.code → ExitCode）
         from .errors import _SUBPROCESS_RC_MAP
@@ -104,6 +118,9 @@ def error(*, error_obj: UnifiedError, run_id: str | None = None,
         job_name=job_name,
         exit_code=exit_code,
         error=error_obj,
+        remediation=remediation,
+        next_action=next_action,
+        data=data or {},
     )
 
 
