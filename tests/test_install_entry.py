@@ -130,10 +130,11 @@ def test_pyproject_packages_only_boss_hr_subtree():
 # 3. boss_hr.cli.COMMANDS 正好是 7 个公开命令
 # ============================================================
 
-def test_comandos_registry_has_exactly_seven_public_commands():
-    """COMMANDS 必须正好是 7 个公开命令。"""
+def test_comandos_registry_has_exactly_eight_public_commands_v111():
+    """v1.1.1: COMMANDS 必须正好是 8 个公开命令（含 doctor）。"""
     from boss_hr.cli import COMMANDS
-    expected = {"start", "confirm", "fetch", "score", "report", "greet", "status"}
+    expected = {"start", "confirm", "fetch", "score", "report",
+                "greet", "status", "doctor"}
     assert set(COMMANDS.keys()) == expected, (
         f"COMMANDS 应为 {expected}，得到 {sorted(COMMANDS.keys())}"
     )
@@ -201,7 +202,8 @@ def test_help_only_shows_seven_commands():
         f"应只有 1 个 subparsers action，得到 {len(sub_actions)}"
     )
     choices = set(sub_actions[0].choices.keys())
-    expected = {"start", "confirm", "fetch", "score", "report", "greet", "status"}
+    expected = {"start", "confirm", "fetch", "score", "report",
+                "greet", "status", "doctor"}
     assert choices == expected, (
         f"argparse 子命令应为 {expected}，得到 {sorted(choices)}"
     )

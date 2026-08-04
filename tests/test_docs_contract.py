@@ -42,6 +42,8 @@ def _strip_comments_and_echo(text: str) -> str:
 
 
 SEVEN_COMMANDS = ["start", "confirm", "fetch", "score", "report", "greet", "status"]
+# v1.1.1: 加 doctor 后变成 8 个公开命令
+EIGHT_COMMANDS_V111 = SEVEN_COMMANDS + ["doctor"]
 FORBIDDEN_OLD_SCRIPTS = [
     "boss_jd.py", "confirm_run.py",
     "recommend_list.py", "recommend_download.py",
@@ -58,11 +60,11 @@ FORBIDDEN_OLD_SCRIPTS = [
 def test_skill_only_mentions_seven_boss_hr_commands():
     src = _read(_SKILL)
     found = set(re.findall(r"boss-hr\s+([a-z][a-z0-9_-]*)", src))
-    extra = found - set(SEVEN_COMMANDS)
+    extra = found - set(EIGHT_COMMANDS_V111)
     assert not extra, (
-        f"SKILL.md 提到了非 7 个公开命令的 boss-hr 子命令: {extra}"
+        f"SKILL.md 提到了非 8 个公开命令的 boss-hr 子命令: {extra}"
     )
-    missing = set(SEVEN_COMMANDS) - found
+    missing = set(EIGHT_COMMANDS_V111) - found
     assert not missing, f"SKILL.md 缺少这些公开命令: {missing}"
 
 

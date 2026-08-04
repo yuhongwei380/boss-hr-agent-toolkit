@@ -96,6 +96,8 @@ def _make_fake_stdout(eid: str, jn: str, rid: str, workspace: Path) -> str:
 def mock_boss_jd(tmp_path, monkeypatch):
     """autouse mock：替代 boss_jd 子进程调用，写真实 run 目录。"""
     from boss_hr.adapters import legacy_runner
+    from boss_hr.adapters import browser_preflight as bp_mod
+    from boss_hr.application import start_service as ss_mod
     calls: list[dict] = []
 
     def _fake(tool, args, *, timeout=60, **kwargs):
@@ -130,6 +132,41 @@ def mock_boss_jd(tmp_path, monkeypatch):
         return _FakeProc(0, _make_fake_stdout(eid, jn, rid, tmp_path), "")
 
     monkeypatch.setattr("boss_hr.adapters.legacy_runner.run_legacy_cli", _fake)
+
+    # v1.1.1: 旁路 browser_preflight（测试不连 CDP）
+    class _PreflightOK:
+        ok = True
+        error_obj = None
+        remediation = None
+        next_action = None
+        info = {"page_kind": "recommend", "logged_in": True}
+
+    monkeypatch.setattr(bp_mod, "browser_preflight", lambda *a, **kw: _PreflightOK())
+
+    # v1.1.1: 旁路实时岗位解析（测试不连 BOSS 后端）
+    # 捕获 fixture 当时的 args 列表到闭包（args 是 _fake 闭包的参数，
+    # 此处的 _fake_resolve 用 fixture 时刻的 args 不行，必须延迟到 _fake
+    # 被调用时拿）。改用 _fake 函数本身把 args 传给 _fake_resolve。
+    captured_args_holder: list = []  # 实际不用，让 _fake_resolve 接受参数
+
+    def _fake_resolve(query, args_for_resolve=None):
+        if args_for_resolve is None:
+            return {"encryptJobId": query, "jobName": "mock_job",
+                    "jobId": None, "address": "", "salaryDesc": ""}
+        # 优先取 --encrypt-job-id 参数
+        eid = query
+        for i, a in enumerate(args_for_resolve):
+            if a == "--encrypt-job-id" and i + 1 < len(args_for_resolve):
+                eid = args_for_resolve[i + 1]
+        jn = "mock_job"
+        for i, a in enumerate(args_for_resolve):
+            if a == "--job-name" and i + 1 < len(args_for_resolve):
+                jn = args_for_resolve[i + 1]
+        return {"encryptJobId": eid, "jobName": jn,
+                "jobId": None, "address": "", "salaryDesc": ""}
+
+    monkeypatch.setattr(ss_mod, "_resolve_recruiter_job", _fake_resolve)
+
     return tmp_path, calls
 
 
@@ -281,7 +318,8 @@ def test_start_missing_query_argparse(tmp_path):
     assert proc.returncode == 2
 
 
-def test_start_missing_job_name_argparse(tmp_path):
+def test_start_query_only_argparse(tmp_path):
+    """v1.1.1: --job-name 改为可选；仅传 query 也能正常启动（实时解析岗位名）。"""
     proc = subprocess.run(
         [sys.executable, "-X", "utf8", str(_CLI), "start",
          "test_eid"],
@@ -291,39 +329,68 @@ def test_start_missing_job_name_argparse(tmp_path):
                                   "BOSS_HR_OUTPUT_DIR": str(tmp_path)},
         cwd=str(_TOOLKIT_ROOT), timeout=15,
     )
-    assert proc.returncode == 2
+    # --job-name 缺不报错；真实 CDP 预检会失败（测试环境无 9222）
+    # 但不能是 argparse rc=2；应是 CDP_NOT_RUNNING 业务层 rc=1
+    assert proc.returncode != 2, (
+        f"argparse 不应再要求 --job-name；got stdout={proc.stdout!r}"
+    )
 
 
-def test_start_missing_encrypt_job_id_business_layer(monkeypatch, tmp_path):
-    """业务层：start 命令在没 CLI 也没 env 时返回 rc=1 + JSON error。
+def test_start_job_not_found_business_layer(monkeypatch, tmp_path):
+    """业务层：query 在 BOSS 实时目录找不到 → JOB_NOT_FOUND + rc=1。
 
-    不走 subprocess（避免 patchright 真实跑）。"""
+    v1.1.1 不再要求 --encrypt-job-id；query 即岗位名实时解析。
+    """
     monkeypatch.delenv("BOSS_HR_ENCRYPT_JOB_ID", raising=False)
-    # 也 patch boss_jd 避免在 fake 时出错
-    from boss_hr.adapters import legacy_runner
-    monkeypatch.setattr(legacy_runner, "run_legacy_cli",
-                        lambda *a, **kw: _FakeProc(0, "Found: x (test_eid_x)\nOK\n", ""))
-    proc = _run_inproc(query="test_eid_x", jn="x", eid=None)
-    # 业务层 rc=1
+    from boss_hr.application import start_service as ss_mod
+    monkeypatch.setattr(ss_mod, "_resolve_recruiter_job", lambda q: None)
+    # 旁路 preflight
+    from boss_hr.adapters import browser_preflight as bp_mod
+    class _OK:
+        ok = True; error_obj = None; remediation = None; next_action = None
+        info = {"page_kind": "recommend", "logged_in": True}
+    monkeypatch.setattr(bp_mod, "browser_preflight", lambda *a, **kw: _OK())
+    monkeypatch.setattr(ss_mod, "browser_preflight", lambda *a, **kw: _OK())
+
+    proc = _run_inproc(query="不存在的岗位名_xyz", jn="x", eid=None)
     assert proc.returncode == 1
     p = json.loads(_decode(proc.stdout))
     assert p["ok"] is False
-    assert p["error"]["code"] == "MISSING_ENCRYPT_JOB_ID"
+    assert p["error"]["code"] == "JOB_NOT_FOUND"
+    # 必须含可执行恢复提示
+    assert p["error"].get("recoverable") is True
+    assert p["error"].get("next_action") == "retry_with_exact_query"
+    assert "remediation" in p["error"]
 
 
 # ============================================================
 # 12. query 与 --encrypt-job-id 一致性
 # ============================================================
 
-def test_start_uses_explicit_encrypt_job_id_over_query(mock_boss_jd):
+def test_start_eid_mismatch_returns_job_id_mismatch(mock_boss_jd):
+    """v1.1.1: --encrypt-job-id 与实时解析结果不一致 → JOB_ID_MISMATCH。
+
+    query=test_eid_query，实时解析返回 test_eid_query；
+    --encrypt-job-id=test_eid_param 不同 → 立即停止。
+    """
     tmp_path, _ = mock_boss_jd
-    proc = _run_inproc(query="test_eid_query", jn="a_job", eid="test_eid_param")
+    from boss_hr.application import start_service as ss_mod
+    # 强制实时解析返回固定 eid（与 --encrypt-job-id 不一致）
+    monkeypatch_obj = __import__("pytest").MonkeyPatch()
+    try:
+        monkeypatch_obj.setattr(ss_mod, "_resolve_recruiter_job",
+                                lambda q: {"encryptJobId": "test_eid_query",
+                                           "jobName": "mock_job",
+                                           "jobId": None})
+        proc = _run_inproc(query="test_eid_query", jn="a_job", eid="test_eid_param")
+    finally:
+        monkeypatch_obj.undo()
+    assert proc.returncode == 1
     p = json.loads(_decode(proc.stdout))
-    # 用 --encrypt-job-id
-    assert p["encrypt_job_id"] == "test_eid_param"
-    rid = p["run_id"]
-    # run_dir 用 param eid
-    assert (tmp_path / "test_eid_param" / "runs" / rid / "run.json").exists()
+    assert p["ok"] is False
+    assert p["error"]["code"] == "JOB_ID_MISMATCH"
+    assert p["error"].get("recoverable") is True
+    assert p["error"].get("next_action") == "retry_without_arg_or_with_correct_eid"
 
 
 # ============================================================
