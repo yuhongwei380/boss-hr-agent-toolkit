@@ -32,7 +32,7 @@ from boss_hr.adapters import legacy_runner
 # 这样 monkeypatch.setattr("boss_hr.adapters.legacy_runner.run_legacy_cli", ...) 才生效
 # （import-from 后的引用在调用方命名空间独立，setattr 不会传播）。
 from boss_hr.adapters.legacy_runner import legacy_error, try_extract_blocked_message
-from boss_hr.adapters.browser_preflight import browser_preflight
+from boss_hr.adapters.browser_environment import ensure_browser_ready
 
 
 def _resolve_encrypt_job_id(cli_value: Optional[str]) -> Optional[str]:
@@ -152,17 +152,15 @@ def fetch_candidates(*, job_name: str, encrypt_job_id: Optional[str],
             exit_code=ExitCode(rc),
         )
 
-    # v1.1.1: fetch 连 BOSS 推荐牛人页面 → browser preflight
-    # 缺 CDP / 未登录 → 立即 CDP_NOT_RUNNING / BOSS_LOGIN_REQUIRED
-    # 不让环境错误落入 INTERNAL 通用外壳
-    preflight = browser_preflight()
-    if not preflight.ok:
+    # v1.1.2: 自动启动 Edge + 登录态（不再要求用户预跑 doctor）
+    ready = ensure_browser_ready(auto_launch=True)
+    if not ready.ok:
         return error(
-            error_obj=preflight.error_obj,
+            error_obj=ready.error_obj,
             run_id=run_id, encrypt_job_id=eid, job_name=job_name,
             exit_code=ExitCode.GENERIC,
-            next_action=preflight.next_action,
-            remediation=preflight.remediation,
+            next_action=ready.next_action,
+            remediation=ready.remediation,
         )
 
     # Step 1: 调 recommend_list

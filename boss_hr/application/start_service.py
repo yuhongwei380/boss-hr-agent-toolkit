@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
-"""boss_hr.application.start_service — start 命令业务逻辑（v1.1.1）。
+"""boss_hr.application.start_service — start 命令业务逻辑（v1.1.2）。
 
 职责：
   - 校验 query（必填）、--job-name（可选）、--encrypt-job-id（可选一致性校验）
   - **不**接受 --run-id（每次 start 创建新 run）
   - **通过 BOSS 实时岗位目录解析 query**（不读 jobs.json / 旧 run / 历史 HTML）
-  - 启动前调 browser_preflight（缺 CDP / 未登录 → 立即 CDP_NOT_RUNNING /
-    BOSS_LOGIN_REQUIRED，不落入 INTERNAL 通用外壳）
+  - 启动前调 ensure_browser_ready（v1.1.2 自动启动专用 Edge）
+    - 缺 CDP → 自动启动专用 Edge + 等登录
+    - 未登录 → waiting_user_login（不创建 run）
+    - 缺 CDP 且 --no-auto-launch → CDP_NOT_RUNNING
+    - BOSS_LOGIN_REQUIRED 但已登录成功 → 继续
   - 把实时解析的 encrypt_job_id 传给 boss_jd 业务入口
   - 解析 boss_jd stdout 抽 run_id
   - 返回 waiting_user_confirmation
@@ -30,7 +33,7 @@ from boss_hr.contracts.errors import ExitCode, ErrorCode, UnifiedError
 from boss_hr.adapters.legacy_runner import (
     legacy_error, try_extract_blocked_message,
 )
-from boss_hr.adapters.browser_preflight import browser_preflight
+from boss_hr.adapters.browser_environment import ensure_browser_ready
 
 
 _RUN_ID_LINE_RE = re.compile(
@@ -159,13 +162,18 @@ def _job_id_mismatch_error(query_eid: str, resolved_eid: str,
 def start_new_run(*, query: Optional[str], job_name: Optional[str],
                   encrypt_job_id: Optional[str],
                   skip_preflight: bool = False,
-                  skip_resolve: bool = False) -> CommandResult:
-    """start 命令业务实现（v1.1.1）。
+                  skip_resolve: bool = False,
+                  auto_launch_browser: bool = True,
+                  login_wait_seconds: int = 20) -> CommandResult:
+    """start 命令业务实现（v1.1.2 自动启动 Edge）。
 
     流程：
       1) query 必填
-      2) browser_preflight（start 必须连 BOSS 后端拉岗位列表）
-         → 缺 CDP / 未登录 → 立即 CDP_NOT_RUNNING / BOSS_LOGIN_REQUIRED
+      2) ensure_browser_ready（start 必须连 BOSS 后端拉岗位列表）
+         auto_launch_browser=True（默认）：缺 CDP → 自动启动专用 Edge
+         未登录 → 自动打开登录页 + 短轮询 → 登录后继续；
+         超时未登录 → waiting_user_login（不创建 run）
+         auto_launch_browser=False（--no-auto-launch）：缺 CDP → CDP_NOT_RUNNING
       3) _resolve_recruiter_job(query) 实时解析（可被 skip_resolve 旁路）
          → 0 匹配 → JOB_NOT_FOUND
          → 多匹配 → JOB_AMBIGUOUS（带 candidates）
@@ -192,11 +200,35 @@ def start_new_run(*, query: Optional[str], job_name: Optional[str],
             },
         )
 
-    # browser preflight（start 必须连 BOSS 后端拉岗位列表）
+    # 浏览器 + 登录态（v1.1.2：自动启动 Edge + 登录页轮询）
     if not skip_preflight:
-        preflight = browser_preflight()
-        if not preflight.ok:
-            return _build_preflight_error(preflight)
+        ready = ensure_browser_ready(
+            auto_launch=auto_launch_browser,
+            login_wait_seconds=login_wait_seconds,
+        )
+        if not ready.ok:
+            # 仍可能用户未登录且超时 → waiting_user_login（不是错误）
+            if ready.error_obj and ready.error_obj.code == ErrorCode.BOSS_LOGIN_REQUIRED:
+                return ok(
+                    status="waiting_user_login",
+                    message=(
+                        "已自动打开专用 Edge，请在浏览器中登录 BOSS 招聘者后台。"
+                        "登录完成后回复“好了”，重新运行同一条 start 命令。"
+                    ),
+                    data={
+                        "browser_auto_launched": ready.info.get("browser_auto_launched", False),
+                        "login_page_opened": ready.info.get("login_page_opened", False),
+                        "login_wait_seconds": ready.info.get("login_wait_seconds", 0),
+                    },
+                    next_action="retry_same_command",
+                )
+            # 真正环境错误（Edge 不存在 / CDP 不可达 / auto_launch=False）
+            return error(
+                error_obj=ready.error_obj,
+                exit_code=ExitCode.GENERIC,
+                next_action=ready.next_action,
+                remediation=ready.remediation,
+            )
 
     # 实时解析
     if not skip_resolve:
