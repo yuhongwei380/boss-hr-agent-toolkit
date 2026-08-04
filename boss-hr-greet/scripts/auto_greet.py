@@ -94,6 +94,30 @@ def note_skip_if_unsaved(out, saved: bool):
         return False
 
 
+def maybe_finish(orch, run_id: str, greeted_count: int, *,
+                 dry_run: bool = False, no_finish: bool = False) -> bool:
+    """招呼完成后决定是否 finish run。返回 True 表示已 finish。
+
+    修复（2026-08-04）：之前 orch.finish() 缺 run_id 实参（签名要求必填），
+    抛 TypeError 被 except Exception 吞掉，run.json.finished 恒为 false。
+
+    规则：
+      - greeted_count == 0  → 不 finish（保留回头补招呼能力）
+      - dry_run              → 不 finish（DRY-RUN 没真发招呼）
+      - no_finish            → 不 finish（CLI 显式要求保留）
+      - 其余                  → finish(run_id=run_id)（失败不静默）
+    """
+    if greeted_count <= 0:
+        return False
+    if dry_run:
+        return False
+    if no_finish:
+        return False
+    # 不再用 try/except 吞错 — 让异常向上抛，智能体能立刻看到
+    orch.finish(run_id=run_id)
+    return True
+
+
 def load_high_score_candidates(job_dir, run_id, score_threshold, only_names=None):
     """从指定 run 的 process/screening_results.json 读高分候选。
 
@@ -798,17 +822,25 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
         log(output, '━' * 60)
     elif greeted_count > 0 and not args.dry_run:
         # 真招呼且至少招呼成功 1 人 → 自动 finish()
+        # 修复（2026-08-04）：用 maybe_finish() 统一决策 + 显式传 run_id；
+        # 失败不静默（异常向上抛，智能体能立即看到 run 未 finished）。
         try:
-            orch.finish()
-            auto_finished = True
+            auto_finished = maybe_finish(
+                orch, run_id,
+                greeted_count=greeted_count,
+                dry_run=args.dry_run,
+                no_finish=args.no_finish,
+            )
+        except TypeError as e:
+            # 兼容防御：未来 finish 签名若再变，TypeError 也要可见
+            log(output, f'⚠️  finish() 签名错误: {e}')
+            raise
+        if auto_finished:
             log(output, '')
             log(output, '━' * 60)
-            log(output, f'✅ A 流程 5 步全部完成，已自动 finish()。')
+            log(output, f'✅ A 流程 5 步全部完成，已自动 finish() run_id={run_id}。')
             log(output, f'招呼成功 {greeted_count} 人，下次跑会自动开新 run。')
             log(output, '━' * 60)
-        except Exception as e:
-            log(output, f'⚠️  自动 finish() 失败（不影响招呼结果）: {e}')
-            log(output, f'    可手动执行: RunOrchestrator(\'{job_name}\').finish()')
     elif args.dry_run:
         log(output, '')
         log(output, '━' * 60)
