@@ -597,3 +597,224 @@ def test_launch_dedicated_edge_no_edge_returns_edge_not_found(monkeypatch):
     r = be.launch_dedicated_edge()
     assert r.ok is False
     assert r.error_code == "EDGE_NOT_FOUND"
+
+
+# ============================================================
+# 7. _open_login_page 真实异常修复后的行为（v1.1.2 fix）
+# ============================================================
+
+def test_open_login_page_success_returns_true(monkeypatch):
+    """登录页打开成功 → (True, "")，且复用 connect_cdp session.page。"""
+    from boss_hr.adapters import browser_environment as be
+
+    class _FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+        def goto(self, url, **kw):
+            self.url = url
+        def bring_to_front(self):
+            pass
+
+    class _FakeSession:
+        page = _FakePage()
+        def disconnect(self):
+            pass
+
+    captured = {}
+    def _fake_connect_cdp(url, *, timeout_ms=4000):
+        captured["called"] = True
+        captured["url"] = url
+        return _FakeSession()
+
+    # 直接 monkeypatch shared.cdp_preflight.connect_cdp 的导入引用
+    import shared.cdp_preflight as cdp_mod
+    monkeypatch.setattr(cdp_mod, "connect_cdp", _fake_connect_cdp)
+    # 同时 patch browser_environment 已缓存的引用
+    monkeypatch.setattr(be, "connect_cdp", _fake_connect_cdp, raising=False)
+
+    ok, reason = be._open_login_page(timeout_seconds=2)
+    assert ok is True
+    assert reason == ""
+    assert captured.get("called") is True
+
+
+def test_open_login_page_uses_single_playwright(monkeypatch):
+    """修复回归：_open_login_page 必须不复用第二个 sync_playwright 实例
+    （原 bug：双 connect_over_cdp 在 asyncio loop 中抛
+    'Playwright Sync API inside the asyncio loop'）。"""
+    from boss_hr.adapters import browser_environment as be
+
+    class _FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+        def goto(self, url, **kw):
+            pass
+        def bring_to_front(self):
+            pass
+
+    class _FakeSession:
+        page = _FakePage()
+        def disconnect(self):
+            pass
+
+    def _fake_connect_cdp(url, *, timeout_ms=4000):
+        return _FakeSession()
+
+    import shared.cdp_preflight as cdp_mod
+    monkeypatch.setattr(cdp_mod, "connect_cdp", _fake_connect_cdp)
+
+    # 关键断言：sync_playwright / connect_over_cdp 不应被再次调用
+    def _boom(*a, **kw):
+        raise AssertionError(
+            "_open_login_page 不应再启 sync_playwright 实例"
+        )
+    monkeypatch.setattr("patchright.sync_api.sync_playwright", _boom)
+    monkeypatch.setattr(
+        "patchright.sync_api._context_manager.sync_playwright", _boom,
+        raising=False,
+    )
+
+    ok, reason = be._open_login_page(timeout_seconds=2)
+    assert ok is True
+
+
+def test_open_login_page_connect_failure_returns_sanitized_reason(monkeypatch):
+    """CDP 不可达 → 返回 (False, "<异常类型>")，且不泄露具体错误信息。"""
+    from boss_hr.adapters import browser_environment as be
+
+    def _fake_connect_cdp(url, *, timeout_ms=4000):
+        raise RuntimeError("CDP 不可达: http://localhost:9222 "
+                           "(ConnectionRefusedError: secret token=abc)")
+
+    import shared.cdp_preflight as cdp_mod
+    monkeypatch.setattr(cdp_mod, "connect_cdp", _fake_connect_cdp)
+
+    ok, reason = be._open_login_page(timeout_seconds=2)
+    assert ok is False
+    assert reason.startswith("RuntimeError:")
+    # 不应泄露具体 token / url / cookie 内容
+    assert "secret" not in reason
+    assert "token=" not in reason
+    assert "Cookie" not in reason
+
+
+def test_open_login_page_unexpected_host_returns_reason(monkeypatch):
+    """导航后 URL 不是 zhipin.com → 返回 (False, "unexpected_host:...")。"""
+    from boss_hr.adapters import browser_environment as be
+
+    class _FakePage:
+        url = ""  # goto 后被改写
+        def goto(self, url, **kw):
+            self.url = "https://evil.example.com/phish"
+        def bring_to_front(self):
+            pass
+
+    class _FakeSession:
+        page = _FakePage()
+        def disconnect(self):
+            pass
+
+    import shared.cdp_preflight as cdp_mod
+    monkeypatch.setattr(cdp_mod, "connect_cdp", lambda *a, **kw: _FakeSession())
+
+    ok, reason = be._open_login_page(timeout_seconds=2)
+    assert ok is False
+    assert reason.startswith("unexpected_host:")
+
+
+def test_start_waiting_user_login_message_admits_when_page_not_opened(monkeypatch):
+    """waiting_user_login + login_page_opened=false → message 不声称已打开，
+    明确要求用户在专用 Edge 中手动打开登录页。"""
+    from boss_hr.application import start_service as ss
+    from boss_hr.adapters import browser_environment as be
+    monkeypatch.setattr(be, "ensure_browser_ready",
+                        lambda *a, **kw: _ready_fail(
+                            "BOSS_LOGIN_REQUIRED", "登录超时",
+                            browser_auto_launched=True,
+                            login_page_opened=False,
+                            login_page_open_error="RuntimeError:CDP 不可达",
+                            login_wait_seconds=20,
+                        ))
+    monkeypatch.setattr(ss, "ensure_browser_ready",
+                        lambda *a, **kw: _ready_fail(
+                            "BOSS_LOGIN_REQUIRED", "登录超时",
+                            browser_auto_launched=True,
+                            login_page_opened=False,
+                            login_page_open_error="RuntimeError:CDP 不可达",
+                            login_wait_seconds=20,
+                        ))
+
+    res = ss.start_new_run(query="X", job_name=None, encrypt_job_id=None,
+                            skip_preflight=False, skip_resolve=True,
+                            auto_launch_browser=True, login_wait_seconds=1)
+    d = res.to_dict("start")
+    assert d["ok"] is True
+    assert d["status"] == "waiting_user_login"
+    assert d["data"]["login_page_opened"] is False
+    # message 不得声称"已为你打开"，必须显式让用户手动打开
+    msg = d["message"]
+    assert "已为你打开" not in msg, (
+        "login_page_opened=false 时 message 不应说'已为你打开'")
+    assert "手动打开" in msg or "https://www.zhipin.com" in msg
+
+
+def test_start_waiting_user_login_message_confirms_when_page_opened(monkeypatch):
+    """waiting_user_login + login_page_opened=true → message 明确说"已为你打开"。"""
+    from boss_hr.application import start_service as ss
+    from boss_hr.adapters import browser_environment as be
+    monkeypatch.setattr(be, "ensure_browser_ready",
+                        lambda *a, **kw: _ready_fail(
+                            "BOSS_LOGIN_REQUIRED", "登录超时",
+                            browser_auto_launched=True,
+                            login_page_opened=True,
+                            login_page_open_error="",
+                            login_wait_seconds=20,
+                        ))
+    monkeypatch.setattr(ss, "ensure_browser_ready",
+                        lambda *a, **kw: _ready_fail(
+                            "BOSS_LOGIN_REQUIRED", "登录超时",
+                            browser_auto_launched=True,
+                            login_page_opened=True,
+                            login_page_open_error="",
+                            login_wait_seconds=20,
+                        ))
+
+    res = ss.start_new_run(query="X", job_name=None, encrypt_job_id=None,
+                            skip_preflight=False, skip_resolve=True,
+                            auto_launch_browser=True, login_wait_seconds=1)
+    d = res.to_dict("start")
+    assert d["ok"] is True
+    assert d["status"] == "waiting_user_login"
+    assert d["data"]["login_page_opened"] is True
+    assert "已为你打开专用 Edge" in d["message"]
+    assert "登录" in d["message"]
+
+
+def test_ensure_browser_ready_open_failure_exposes_reason(monkeypatch):
+    """ensure_browser_ready 在 _open_login_page 失败时把 reason 写入
+    info.login_page_open_error，便于上层 message 区分。"""
+    from boss_hr.adapters import browser_environment as be
+
+    monkeypatch.setattr(be, "check_python_version", lambda: (True, "3.13.0"))
+    monkeypatch.setattr(be, "check_patchright_installed", lambda: True)
+    monkeypatch.setattr(be, "check_edge_executable",
+                        lambda: r"C:\fake\msedge.exe")
+    monkeypatch.setattr(be, "check_cdp_port_listening", lambda *a, **kw: True)
+    monkeypatch.setattr(be, "check_cdp_connectable", lambda *a, **kw: (True, ""))
+    monkeypatch.setattr(be, "check_boss_logged_in",
+                        lambda *a, **kw: (False,
+                                          {"page_kind": "unknown",
+                                           "current_url": "about:blank"}))
+    monkeypatch.setattr(be, "_open_login_page",
+                        lambda *a, **kw: (False, "RuntimeError:CDP 不可达"))
+    # 极短 poll，立即超时
+    import time as _t
+    _t0 = _t.time()
+    monkeypatch.setattr(be, "_poll_login_status",
+                        lambda *, wait_seconds: (False, {}))
+
+    r = be.ensure_browser_ready(auto_launch=True, login_wait_seconds=0)
+    assert r.ok is False
+    assert r.error_obj.code.value == "BOSS_LOGIN_REQUIRED"
+    assert r.info.get("login_page_opened") is False
+    assert "CDP" in (r.info.get("login_page_open_error") or "")
+    # message 不应声称已打开登录页
+    assert "已自动打开 BOSS 招聘者登录页" not in (r.error_obj.message or "")

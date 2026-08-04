@@ -181,37 +181,70 @@ def launch_dedicated_edge(*, wait_seconds: int = CDP_LAUNCH_WAIT_SECONDS
 # ============================================================
 
 def _open_login_page(url: str = EDGE_BROWSER_LOGIN_URL,
-                     timeout_seconds: int = 8) -> bool:
-    """通过 patchright + CDP 在专用 Edge 中打开 BOSS 登录页。"""
+                     timeout_seconds: int = 8) -> tuple[bool, str]:
+    """通过 patchright + CDP 在专用 Edge 中打开 BOSS 招聘者登录/后台入口。
+
+    复用 `shared.cdp_preflight.connect_cdp` 建立的会话（不要再开第二个
+    playwright 实例，避免与 `_poll_login_status` 抢同一 9222 端口导致
+    "Playwright Sync API inside the asyncio loop" 异常）。
+
+    返回 (ok, reason)：
+      - (True, "")：页面已导航到 `url`（或同源 BOSS 招聘者域）且已
+        bring_to_front；
+      - (False, "<脱敏错误类型>"): 失败原因；**不**含 Cookie / URL token /
+        用户名。
+
+    设计原则：
+      - 不静默吞异常：失败原因透出到上层 info，便于诊断；
+      - 不伪称已打开：失败时 `login_page_opened` 严格为 False；
+      - 不重复登录/不填表/不读 cookie 值。
+    """
     try:
-        from patchright.sync_api import sync_playwright
         from shared.cdp_preflight import connect_cdp
-    except ImportError:
-        return False
+    except ImportError as e:
+        return False, f"ImportError: {type(e).__name__}"
+
+    sess = None
     try:
         sess = connect_cdp(CDP_URL_DEFAULT, timeout_ms=4000)
-    except Exception:
-        return False
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.connect_over_cdp(CDP_URL_DEFAULT, timeout=4000)
-            try:
-                ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-                page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=timeout_seconds * 1000)
-                return True
-            finally:
-                try:
-                    browser.close()
-                except Exception:
-                    pass
-    except Exception:
-        return False
-    finally:
+        page = sess.page
+        if page is None:
+            return False, "CDPSession 无可用 page"
+
+        # 导航到 BOSS 招聘者入口（不阻塞过久；超时走 fail-soft）
         try:
-            sess.disconnect()
+            page.goto(url, wait_until="domcontentloaded",
+                      timeout=timeout_seconds * 1000)
+        except Exception as e:
+            return False, f"goto:{type(e).__name__}"
+
+        # 校验最终 URL：必须是 zhipin.com 域（避免被劫持到 about:blank）
+        try:
+            final_url = page.url or ""
+        except Exception as e:
+            return False, f"url_read:{type(e).__name__}"
+        if "zhipin.com" not in final_url:
+            return False, f"unexpected_host:{final_url[:32]}"
+
+        try:
+            page.bring_to_front()
         except Exception:
+            # bring_to_front 失败不影响"已打开"语义
             pass
+
+        return True, ""
+    except RuntimeError as e:
+        # connect_cdp 自身失败（CDP 不可达 / patchright 未装）
+        return False, f"RuntimeError:{type(e).__name__}"
+    except Exception as e:
+        # 兜底：记录类型，不泄露消息
+        return False, f"{type(e).__name__}"
+    finally:
+        if sess is not None:
+            try:
+                sess.disconnect()
+            except Exception:
+                pass
 
 
 def _poll_login_status(*, wait_seconds: int) -> tuple[bool, dict]:
@@ -390,7 +423,7 @@ def ensure_browser_ready(*, auto_launch: bool = True,
 
     # 7. 未登录：自动打开登录页 + 轮询等待
     if auto_launched or check_cdp_port_listening():
-        login_page_opened = _open_login_page()
+        login_page_opened, login_page_open_error = _open_login_page()
         logged_in, last_info = _poll_login_status(
             wait_seconds=login_wait_seconds,
         )
@@ -406,26 +439,42 @@ def ensure_browser_ready(*, auto_launch: bool = True,
                     "login_wait_seconds": login_wait_seconds,
                 },
             )
-        # 超时仍未登录
+        # 超时仍未登录；message 与 remediation 严格根据 login_page_opened 区分文案，
+        # 不伪称已打开登录页
+        if login_page_opened:
+            timeout_msg = "已自动打开 BOSS 招聘者登录页，但登录超时。"
+            remediation_instructions = [
+                f"Edge 已自动打开 BOSS 登录页（{EDGE_BROWSER_LOGIN_URL}）",
+                f"请在 {login_wait_seconds}s 内扫码登录招聘者后台",
+                "登录完成后重新运行原命令",
+            ]
+        else:
+            # 自动启动 Edge 成功但 _open_login_page 失败：不伪称已打开
+            err_suffix = (
+                f"（{login_page_open_error}）" if login_page_open_error else ""
+            )
+            timeout_msg = (
+                f"已自动启动专用 Edge，但未能自动打开 BOSS 招聘者登录页{err_suffix}。"
+                f"请在专用 Edge 窗口中手动打开 {EDGE_BROWSER_LOGIN_URL} 登录。"
+            )
+            remediation_instructions = [
+                f"在已自动打开的专用 Edge 窗口中手动打开：{EDGE_BROWSER_LOGIN_URL}",
+                f"在 {login_wait_seconds}s 内完成 BOSS 招聘者扫码登录",
+                "登录完成后重新运行原命令",
+            ]
         return BrowserReadyResult(
             ok=False,
             error_obj=UnifiedError(
                 code=ErrorCode.BOSS_LOGIN_REQUIRED,
-                message="已自动打开 BOSS 招聘者登录页，但登录超时。",
+                message=timeout_msg,
                 recoverable=True,
             ),
             next_action="login_then_retry",
-            remediation={
-                "instructions": [
-                    f"Edge 已自动打开 BOSS 登录页（{EDGE_BROWSER_LOGIN_URL}）",
-                    "请在 {wait_seconds}s 内扫码登录招聘者后台".format(
-                        wait_seconds=login_wait_seconds),
-                    "登录完成后重新运行原命令",
-                ],
-            },
+            remediation={"instructions": remediation_instructions},
             info={
                 "browser_auto_launched": auto_launched,
                 "login_page_opened": login_page_opened,
+                "login_page_open_error": login_page_open_error,
                 "login_wait_seconds": login_wait_seconds,
             },
         )

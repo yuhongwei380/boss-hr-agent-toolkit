@@ -209,16 +209,32 @@ def start_new_run(*, query: Optional[str], job_name: Optional[str],
         if not ready.ok:
             # 仍可能用户未登录且超时 → waiting_user_login（不是错误）
             if ready.error_obj and ready.error_obj.code == ErrorCode.BOSS_LOGIN_REQUIRED:
+                _info = ready.info or {}
+                _opened = bool(_info.get("login_page_opened", False))
+                if _opened:
+                    _msg = (
+                        "已为你打开专用 Edge，请在浏览器中扫码登录 BOSS 招聘者后台。"
+                        "完成后回复“好了”，我会继续当前任务。"
+                    )
+                else:
+                    # 登录页未自动打开：明确告诉用户手工打开
+                    _err = _info.get("login_page_open_error") or ""
+                    _suffix = f"（{_err}）" if _err else ""
+                    _msg = (
+                        "已为你启动专用 Edge，但未能自动打开 BOSS 招聘者登录页"
+                        f"{_suffix}。"
+                        "请在已打开的专用 Edge 窗口中手动打开 "
+                        "https://www.zhipin.com/web/chat/recommend 登录。"
+                        "完成后回复“好了”，我会继续当前任务。"
+                    )
                 return ok(
                     status="waiting_user_login",
-                    message=(
-                        "已自动打开专用 Edge，请在浏览器中登录 BOSS 招聘者后台。"
-                        "登录完成后回复“好了”，重新运行同一条 start 命令。"
-                    ),
+                    message=_msg,
                     data={
-                        "browser_auto_launched": ready.info.get("browser_auto_launched", False),
-                        "login_page_opened": ready.info.get("login_page_opened", False),
-                        "login_wait_seconds": ready.info.get("login_wait_seconds", 0),
+                        "browser_auto_launched": _info.get("browser_auto_launched", False),
+                        "login_page_opened": _opened,
+                        "login_page_open_error": _info.get("login_page_open_error", ""),
+                        "login_wait_seconds": _info.get("login_wait_seconds", 0),
                     },
                     next_action="retry_same_command",
                 )
