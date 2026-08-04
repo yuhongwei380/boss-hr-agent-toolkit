@@ -132,14 +132,22 @@ def test_doctor_returns_cdp_not_running_when_no_9222(monkeypatch):
     # mock 浏览器预检：CDP 端口未监听
     from boss_hr.application import doctor_service as ds
     from boss_hr.adapters import browser_preflight as bp
-    from boss_hr.adapters.browser_preflight import (
-        check_cdp_port_listening, check_cdp_connectable,
-    )
-    monkeypatch.setattr(bp, "check_cdp_port_listening", lambda *a, **kw: False)
+    from boss_hr.adapters import browser_environment as be
+    monkeypatch.setattr(be, "check_cdp_port_listening", lambda *a, **kw: False)
     # 不让 doctor 自己真去探
+    monkeypatch.setattr(be, "check_edge_executable", lambda: None)
+    monkeypatch.setattr(be, "check_python_version", lambda: (True, "3.13.0"))
+    monkeypatch.setattr(be, "check_patchright_installed", lambda: True)
+    # doctor_service 内部 import 了 check_cdp_port_listening；要 monkeypatch
+    # 三个层：模块属性 + 服务模块本地引用
+    monkeypatch.setattr(bp, "check_cdp_port_listening", lambda *a, **kw: False)
     monkeypatch.setattr(bp, "check_edge_executable", lambda: None)
     monkeypatch.setattr(bp, "check_python_version", lambda: (True, "3.13.0"))
     monkeypatch.setattr(bp, "check_patchright_installed", lambda: True)
+    monkeypatch.setattr(ds, "check_cdp_port_listening", lambda *a, **kw: False)
+    monkeypatch.setattr(ds, "check_edge_executable", lambda: None)
+    monkeypatch.setattr(ds, "check_python_version", lambda: (True, "3.13.0"))
+    monkeypatch.setattr(ds, "check_patchright_installed", lambda: True)
 
     res = ds.run_doctor()
     d = res.to_dict("doctor")
@@ -154,10 +162,19 @@ def test_doctor_returns_edge_not_found(monkeypatch):
     """Edge 不存在 → EDGE_NOT_FOUND。"""
     from boss_hr.application import doctor_service as ds
     from boss_hr.adapters import browser_preflight as bp
+    from boss_hr.adapters import browser_environment as be
+    monkeypatch.setattr(be, "check_edge_executable", lambda: None)
+    monkeypatch.setattr(be, "check_python_version", lambda: (True, "3.13.0"))
+    monkeypatch.setattr(be, "check_patchright_installed", lambda: True)
+    monkeypatch.setattr(be, "check_cdp_port_listening", lambda *a, **kw: False)
     monkeypatch.setattr(bp, "check_edge_executable", lambda: None)
     monkeypatch.setattr(bp, "check_python_version", lambda: (True, "3.13.0"))
     monkeypatch.setattr(bp, "check_patchright_installed", lambda: True)
     monkeypatch.setattr(bp, "check_cdp_port_listening", lambda *a, **kw: False)
+    monkeypatch.setattr(ds, "check_edge_executable", lambda: None)
+    monkeypatch.setattr(ds, "check_python_version", lambda: (True, "3.13.0"))
+    monkeypatch.setattr(ds, "check_patchright_installed", lambda: True)
+    monkeypatch.setattr(ds, "check_cdp_port_listening", lambda *a, **kw: False)
 
     res = ds.run_doctor()
     d = res.to_dict("doctor")
@@ -215,7 +232,7 @@ def test_start_resolves_query_by_name(monkeypatch):
     from boss_hr.application import start_service as ss
     from boss_hr.adapters import legacy_runner
 
-    monkeypatch.setattr(ss, "browser_preflight", lambda *a, **kw: _ok_preflight())
+    monkeypatch.setattr(ss, "ensure_browser_ready", lambda *a, **kw: _ok_ready())
     monkeypatch.setattr(
         ss, "_resolve_recruiter_job",
         lambda q: {"encryptJobId": "RESOLVED_EID", "jobName": "解析出的岗位"},
@@ -247,7 +264,7 @@ def test_start_resolves_jobId(tmp_path, monkeypatch):
     """query 给数字 jobId。"""
     from boss_hr.application import start_service as ss
     from boss_hr.adapters import legacy_runner
-    monkeypatch.setattr(ss, "browser_preflight", lambda *a, **kw: _ok_preflight())
+    monkeypatch.setattr(ss, "ensure_browser_ready", lambda *a, **kw: _ok_ready())
     monkeypatch.setattr(
         ss, "_resolve_recruiter_job",
         lambda q: {"encryptJobId": "FROM_JOBID_123", "jobName": "通过 jobId 解析",
@@ -275,7 +292,7 @@ def test_start_resolves_encrypt_job_id(tmp_path, monkeypatch):
     """query 给完整 encryptJobId。"""
     from boss_hr.application import start_service as ss
     from boss_hr.adapters import legacy_runner
-    monkeypatch.setattr(ss, "browser_preflight", lambda *a, **kw: _ok_preflight())
+    monkeypatch.setattr(ss, "ensure_browser_ready", lambda *a, **kw: _ok_ready())
     monkeypatch.setattr(
         ss, "_resolve_recruiter_job",
         lambda q: {"encryptJobId": "9a7759badfd95d350nFz3d-_F1NX",
@@ -303,7 +320,7 @@ def test_start_resolves_encrypt_job_id(tmp_path, monkeypatch):
 def test_start_no_match_returns_job_not_found(monkeypatch):
     """query 在 BOSS 实时目录找不到 → JOB_NOT_FOUND + 可恢复。"""
     from boss_hr.application import start_service as ss
-    monkeypatch.setattr(ss, "browser_preflight", lambda *a, **kw: _ok_preflight())
+    monkeypatch.setattr(ss, "ensure_browser_ready", lambda *a, **kw: _ok_ready())
     monkeypatch.setattr(ss, "_resolve_recruiter_job", lambda q: None)
 
     res = ss.start_new_run(query="完全找不到_xyz", job_name="x", encrypt_job_id=None,
@@ -318,7 +335,7 @@ def test_start_no_match_returns_job_not_found(monkeypatch):
 def test_start_ambiguous_returns_candidates(monkeypatch):
     """多匹配 → JOB_AMBIGUOUS + data.candidates。"""
     from boss_hr.application import start_service as ss
-    monkeypatch.setattr(ss, "browser_preflight", lambda *a, **kw: _ok_preflight())
+    monkeypatch.setattr(ss, "ensure_browser_ready", lambda *a, **kw: _ok_ready())
     monkeypatch.setattr(
         ss, "_resolve_recruiter_job",
         lambda q: [
@@ -341,7 +358,7 @@ def test_start_ambiguous_returns_candidates(monkeypatch):
 def test_start_eid_mismatch_returns_job_id_mismatch(monkeypatch):
     """--encrypt-job-id 与实时解析不一致 → JOB_ID_MISMATCH。"""
     from boss_hr.application import start_service as ss
-    monkeypatch.setattr(ss, "browser_preflight", lambda *a, **kw: _ok_preflight())
+    monkeypatch.setattr(ss, "ensure_browser_ready", lambda *a, **kw: _ok_ready())
     # 实时返回 eid_A，但用户传 eid_B
     monkeypatch.setattr(
         ss, "_resolve_recruiter_job",
@@ -361,7 +378,7 @@ def test_start_does_not_read_jobs_json(monkeypatch):
     from boss_hr.application import start_service as ss
     from boss_hr.adapters import legacy_runner
     calls = {"resolve": 0, "boss_jd": 0}
-    monkeypatch.setattr(ss, "browser_preflight", lambda *a, **kw: _ok_preflight())
+    monkeypatch.setattr(ss, "ensure_browser_ready", lambda *a, **kw: _ok_ready())
     def _fake_resolve(q):
         calls["resolve"] += 1
         return {"encryptJobId": "LIVE_FROM_BOSS", "jobName": "BOSS 实时岗位"}
@@ -413,7 +430,7 @@ def test_start_no_cdp_returns_cdp_not_running_without_calling_boss_jd(monkeypatc
         next_action = "launch_edge"
         remediation = {"command": "boss-hr doctor --launch-edge",
                         "instructions": ["a"]}
-    monkeypatch.setattr(ss, "browser_preflight", lambda *a, **kw: _Fake())
+    monkeypatch.setattr(ss, "ensure_browser_ready", lambda *a, **kw: _Fake())
     called = {"boss_jd": 0}
     def _fake_boss_jd(*a, **kw):
         called["boss_jd"] += 1
@@ -445,7 +462,7 @@ def test_fetch_no_cdp_returns_cdp_not_running(tmp_path, monkeypatch):
         next_action = "launch_edge"
         remediation = {"command": "boss-hr doctor --launch-edge",
                         "instructions": ["a"]}
-    monkeypatch.setattr(fs, "browser_preflight", lambda *a, **kw: _Fake())
+    monkeypatch.setattr(fs, "ensure_browser_ready", lambda *a, **kw: _Fake())
     called = {"list": 0}
     def _fake_list(*a, **kw):
         called["list"] += 1
@@ -484,7 +501,7 @@ def test_greet_no_cdp_returns_cdp_not_running(tmp_path, monkeypatch):
         next_action = "launch_edge"
         remediation = {"command": "boss-hr doctor --launch-edge",
                         "instructions": ["a"]}
-    monkeypatch.setattr(gs, "browser_preflight", lambda *a, **kw: _Fake())
+    monkeypatch.setattr(gs, "ensure_browser_ready", lambda *a, **kw: _Fake())
     called = {"auto_greet": 0}
     def _fake_ag(*a, **kw):
         called["auto_greet"] += 1
@@ -554,7 +571,7 @@ def test_status_does_not_require_browser(tmp_path, monkeypatch):
 # helpers
 # ============================================================
 
-def _ok_preflight():
+def _ok_ready():
     class _P:
         ok = True
         error_obj = None

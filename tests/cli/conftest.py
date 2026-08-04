@@ -96,41 +96,47 @@ def _auto_mock_legacy_runner(monkeypatch, tmp_path):
 
 @pytest.fixture(autouse=True)
 def _auto_mock_browser_preflight(monkeypatch):
-    """v1.1.1 autouse：mock browser_preflight 默认返回 ok=True。
+    """v1.1.2 autouse：mock ensure_browser_ready 默认返回 ok=True。
 
-    fetch / greet / start 在调子脚本前会跑 browser_preflight；
+    fetch / greet / start 在调子脚本前会跑 ensure_browser_ready；
     测试不需要真连 CDP / 登录态。专门测试 browser 错误的测试用
-    `monkeypatch.setattr(...)` 覆盖或显式调用 fake_preflight() 工厂。
+    `monkeypatch.setattr(...)` 覆盖或显式调用 fake_ready() 工厂。
 
     mock 必须打在**所有 import 路径**：
-      - boss_hr.adapters.browser_preflight（模块属性）
+      - boss_hr.adapters.browser_environment（模块属性）
       - boss_hr.application.start_service / fetch_service / greet_service
-        （已经 `from ... import browser_preflight` 把引用拷到模块里了）
+        （已经 `from ... import ensure_browser_ready` 把引用拷到模块里了）
     """
-    from boss_hr.adapters import browser_preflight as bp_mod
+    from boss_hr.adapters import browser_environment as be_mod
     from boss_hr.application import (
         start_service as ss_mod,
         fetch_service as fs_mod,
         greet_service as gs_mod,
     )
 
-    class _PreflightOK:
+    class _ReadyOK:
         ok = True
         error_obj = None
         remediation = None
         next_action = None
-        info = {"page_kind": "recommend", "page_url": "https://www.zhipin.com/web/chat/recommend",
-                "logged_in": True}
+        info = {
+            "browser_auto_launched": False,
+            "login_session_reused": False,
+            "login_page_opened": False,
+            "page_kind": "recommend",
+            "page_url": "https://www.zhipin.com/web/chat/recommend",
+            "logged_in": True,
+        }
 
-    def _ok_preflight(*a, **kw):
-        return _PreflightOK()
+    def _ok_ready(*a, **kw):
+        return _ReadyOK()
 
     # 模块属性
-    monkeypatch.setattr(bp_mod, "browser_preflight", _ok_preflight)
+    monkeypatch.setattr(be_mod, "ensure_browser_ready", _ok_ready)
     # 各 service 模块里的本地引用
-    monkeypatch.setattr(ss_mod, "browser_preflight", _ok_preflight)
-    monkeypatch.setattr(fs_mod, "browser_preflight", _ok_preflight)
-    monkeypatch.setattr(gs_mod, "browser_preflight", _ok_preflight)
+    monkeypatch.setattr(ss_mod, "ensure_browser_ready", _ok_ready)
+    monkeypatch.setattr(fs_mod, "ensure_browser_ready", _ok_ready)
+    monkeypatch.setattr(gs_mod, "ensure_browser_ready", _ok_ready)
 
     # v1.1.1: 实时解析旁路 — 默认按 query == encryptJobId 返回
     def _default_resolve(query):
@@ -138,4 +144,4 @@ def _auto_mock_browser_preflight(monkeypatch):
                 "jobId": None, "address": "", "salaryDesc": ""}
 
     monkeypatch.setattr(ss_mod, "_resolve_recruiter_job", _default_resolve)
-    return _PreflightOK()
+    return _ReadyOK()

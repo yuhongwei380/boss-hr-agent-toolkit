@@ -318,22 +318,43 @@ def test_start_missing_query_argparse(tmp_path):
     assert proc.returncode == 2
 
 
-def test_start_query_only_argparse(tmp_path):
-    """v1.1.1: --job-name 改为可选；仅传 query 也能正常启动（实时解析岗位名）。"""
-    proc = subprocess.run(
-        [sys.executable, "-X", "utf8", str(_CLI), "start",
-         "test_eid"],
-        capture_output=True, env={**os.environ, "PYTHONUTF8": "1",
-                                  "PYTHONIOENCODING": "utf-8",
-                                  "PYTHONPATH": str(_SHARED),
-                                  "BOSS_HR_OUTPUT_DIR": str(tmp_path)},
-        cwd=str(_TOOLKIT_ROOT), timeout=15,
-    )
-    # --job-name 缺不报错；真实 CDP 预检会失败（测试环境无 9222）
-    # 但不能是 argparse rc=2；应是 CDP_NOT_RUNNING 业务层 rc=1
-    assert proc.returncode != 2, (
-        f"argparse 不应再要求 --job-name；got stdout={proc.stdout!r}"
-    )
+def test_start_query_only_argparse(monkeypatch, tmp_path):
+    """v1.1.1: --job-name 改为可选；仅传 query 也能正常启动（实时解析岗位名）。
+
+    用 inproc + mock preflight，避免真连 CDP。
+    """
+    from boss_hr.application import start_service as ss
+    from boss_hr.adapters import legacy_runner
+
+    class _ReadyOK:
+        ok = True
+        error_obj = None
+        remediation = None
+        next_action = None
+        info = {"page_kind": "recommend", "logged_in": True}
+    monkeypatch.setattr(ss, "ensure_browser_ready",
+                        lambda *a, **kw: _ReadyOK())
+    monkeypatch.setattr(ss, "_resolve_recruiter_job",
+                        lambda q: {"encryptJobId": "test_eid",
+                                   "jobName": "解析出的岗位",
+                                   "jobId": None, "address": "", "salaryDesc": ""})
+
+    class _OKProc:
+        returncode = 0
+        stdout = ("run_id: 2026-08-04_120000（orchestrator 创建）\n"
+                  + '{"status":"waiting_user_confirmation","run_id":"2026-08-04_120000"}\n'
+                  + "Saved to /tmp/job_detail.json\n")
+        stderr = ""
+    monkeypatch.setattr(legacy_runner, "run_legacy_cli",
+                        lambda *a, **kw: _OKProc())
+
+    res = ss.start_new_run(query="test_eid", job_name=None, encrypt_job_id=None,
+                            skip_preflight=True, skip_resolve=False,
+                            auto_launch_browser=True, login_wait_seconds=1)
+    d = res.to_dict("start")
+    # --job-name 缺不报错；inproc 拿到 status=waiting_user_confirmation
+    assert d["ok"] is True
+    assert d["status"] == "waiting_user_confirmation"
 
 
 def test_start_job_not_found_business_layer(monkeypatch, tmp_path):
@@ -344,13 +365,13 @@ def test_start_job_not_found_business_layer(monkeypatch, tmp_path):
     monkeypatch.delenv("BOSS_HR_ENCRYPT_JOB_ID", raising=False)
     from boss_hr.application import start_service as ss_mod
     monkeypatch.setattr(ss_mod, "_resolve_recruiter_job", lambda q: None)
-    # 旁路 preflight
-    from boss_hr.adapters import browser_preflight as bp_mod
-    class _OK:
+    # 旁路 v1.1.2 browser ensure（多 import 路径：模块 + 服务本地引用）
+    from boss_hr.adapters import browser_environment as be_mod
+    class _ReadyOK:
         ok = True; error_obj = None; remediation = None; next_action = None
         info = {"page_kind": "recommend", "logged_in": True}
-    monkeypatch.setattr(bp_mod, "browser_preflight", lambda *a, **kw: _OK())
-    monkeypatch.setattr(ss_mod, "browser_preflight", lambda *a, **kw: _OK())
+    monkeypatch.setattr(be_mod, "ensure_browser_ready", lambda *a, **kw: _ReadyOK())
+    monkeypatch.setattr(ss_mod, "ensure_browser_ready", lambda *a, **kw: _ReadyOK())
 
     proc = _run_inproc(query="不存在的岗位名_xyz", jn="x", eid=None)
     assert proc.returncode == 1
