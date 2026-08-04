@@ -35,8 +35,21 @@
 
 ## 🚀 快速开始（CLI 工作流）
 
-**前置**：Windows + Python 3.10+ + Edge 以 `--remote-debugging-port=9222` 启动 +
-招聘者扫码登录 + `pip install -e .` 安装本工具包。
+**前置**：Windows + Python 3.10+ + Edge 浏览器 + `pip install -e .` 安装本工具包。
+
+> **v1.1.2 自动恢复**：**不需要**预先手动启动 Edge，也**不需要**预先跑
+> `boss-hr doctor`。直接 `boss-hr start` 即可：
+>
+> - 9222 已开 + 已登录 → 立即进入业务；
+> - 9222 未开 → 自动启动**专用** Edge
+>   （`%LOCALAPPDATA%\boss-hr-edge-profile` + `--remote-debugging-port=9222`，
+>   **不**污染日常 Edge profile）；
+> - 自动启动后未登录 → 自动打开 BOSS 招聘者登录页，轮询等待（默认 20s）；
+> - 超时未登录 → 返回 `status=waiting_user_login`（**不是错误**），
+>   `next_action=retry_same_command`，**不创建 run**；
+> - 用户在专用 Edge 窗口内登录后，**重试同一条 start** 即可继续。
+>
+> `boss-hr doctor` 仍是独立诊断工具，但**不再是 start 的必经前置**。
 
 ```bash
 git clone https://github.com/<owner>/boss-hr-agent-toolkit
@@ -44,19 +57,20 @@ cd boss-hr-agent-toolkit
 python -m pip install -e .
 
 # 验证安装
-boss-hr --help          # 应只列 7 个公开命令
+boss-hr --help          # 应列 8 个公开命令（含 doctor）
 python -m boss_hr --help # 等价入口
 ```
 
-完整 7 命令工作流（详见 [docs/CLI_WORKFLOW.md](docs/CLI_WORKFLOW.md)）：
+完整 8 命令工作流（详见 [docs/CLI_WORKFLOW.md](docs/CLI_WORKFLOW.md)）：
 
 ```bash
-# 1. 创建新 run（停在人工确认门）
+# 1. 直接创建新 run（停在人工确认门；v1.1.2 自动启动 Edge + 等登录）
 boss-hr start "<encryptJobId|jobId|岗位名>" \
   --job-name "<岗位名>" --encrypt-job-id "<id>"
-
 # → status=waiting_user_confirmation，run_id=...
 # → 智能体停下，告知用户在 BOSS 推荐牛人页面调整筛选条件
+# 若 start 返回 status=waiting_user_login：智能体停下，告知用户在专用
+# Edge 中登录后重试同一条 start
 
 # 用户回复"继续"后：
 # 2. confirm + fetch
@@ -170,14 +184,20 @@ Edge 9222 端口（共享同一份 wt2/zp_at/bst cookie）。
 pip install patchright
 ```
 
-### 2. 启动 CDP 浏览器
+### 2. 启动 CDP 浏览器（v1.1.2 通常由 start 自动启动）
+
+**正常流程无需手动启动**：`boss-hr start` 会自动启动专用 Edge
+（`%LOCALAPPDATA%\boss-hr-edge-profile` + `--remote-debugging-port=9222`），
+并在专用 Edge 中打开 BOSS 登录页等待登录。
+
+仅当自动启动失败、或你希望手动控制时，使用下面命令：
 
 **Windows（推荐自带 Edge）：**
 
 ```powershell
 Start-Process "msedge" -ArgumentList `
   "--remote-debugging-port=9222", `
-  "--user-data-dir=$env:USERPROFILE\.workbuddy\chrome-profiles\boss-cdp"
+  "--user-data-dir=$env:LOCALAPPDATA\boss-hr-edge-profile"
 ```
 
 **macOS / Linux：**
@@ -185,12 +205,16 @@ Start-Process "msedge" -ArgumentList `
 ```bash
 google-chrome \
   --remote-debugging-port=9222 \
-  --user-data-dir="$HOME/.workbuddy/chrome-profiles/boss-cdp"
+  --user-data-dir="$HOME/.boss-hr-edge-profile"
 ```
 
 ### 3. 登录
 
 在打开的 Edge 窗口里**人工扫码登录 BOSS 招聘者**，登录态会被 9222 端口的浏览器 session 持有。
+
+v1.1.2 默认行为：start / fetch / greet 都会自动在专用 Edge 中打开 BOSS
+登录页，等待用户登录后继续。`boss-hr doctor` 也支持 `--launch-edge`
+手动启动专用 Edge。
 
 验证脚本会自动检查 `zp_at` / `wt2` / `bst` 三 cookie 是否齐全，无须手动命令。可以用 shared 模块快速自检：
 

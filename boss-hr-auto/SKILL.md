@@ -58,18 +58,32 @@ type: workflow
 `score_resumes.py` / `generate_html_report.py` / `auto_greet.py` /
 `cli_runner.py` / spec JSON。
 
-## 首次使用流程（v1.1.1 强制）
+## 浏览器与登录态（v1.1.2 自动恢复）
 
-1. 首次使用或环境未知时，**先**调 `boss-hr doctor`；
-2. `doctor` 返回 `status=ready` 才继续执行 `start`；
-3. `doctor` 返回 `status=action_required` 时：
-   - 按 `remediation` 字段向用户说明（如"启动专用 Edge 并登录 BOSS"）；
-   - **禁止**查看 `boss_hr` 源码；
-   - **禁止**读取历史输出 / `jobs.json` 找 ID；
-   - **禁止**绕过 CLI；
-   - 等用户完成动作后**重新**调 `boss-hr doctor` 验证。
+**正常流程直接 `start`**。start / fetch / greet 都自动保证 Edge + BOSS
+登录态可用，不需要先跑 `doctor`：
 
-`doctor` 不读 `jobs.json`、不连接业务岗位 API、不创建 run、不写业务输出。
+1. start 检查 9222 端口；未监听 → 自动启动**专用** Edge
+   （`--user-data-dir=%LOCALAPPDATA%\boss-hr-edge-profile` + `--remote-debugging-port=9222`，
+   **不**污染用户日常 Edge profile）。
+2. 自动启动成功后连接 CDP，检查 BOSS 登录态。
+3. 已登录 → 继续执行 start 业务（实时解析岗位 → 创建 run）。
+4. 未登录 → 自动打开 BOSS 招聘者登录页，轮询等待（默认 20 秒）。
+5. 用户在专用 Edge 窗口内扫码登录 → 轮询命中后继续 start。
+6. 超时仍未登录 → 返回 `status=waiting_user_login`（**不是错误**），
+   `next_action=retry_same_command`，**不创建 run**。智能体停下，告诉
+   用户"已在专用 Edge 中打开登录页，请登录后回复“好了”重试同一条 start"。
+
+`doctor` 仍是独立诊断工具，但**不再是 start 的必经前置**。仅当：
+
+- 自动启动 Edge 失败（`EDGE_LAUNCH_FAILED` / `CDP_NOT_RUNNING` 超时）；
+- CDP 可连但 BOSS 始终判定未登录；
+- Edge 缺失或版本不匹配；
+
+这些**才**用 `doctor` 排查。普通首次使用**不需要**先 doctor。
+
+调试时可加 `--no-auto-launch`：缺 CDP 时直接返回 `CDP_NOT_RUNNING`，
+跳过自动启动 Edge。
 
 ## 岗位解析规则（v1.1.1 强制）
 
@@ -91,18 +105,21 @@ type: workflow
 - 扫描最近 run
 - 读取 `current_run.json`（已废弃）
 
-### 0. 环境预检（v1.1.1 新增）：`boss-hr doctor`
+### 0. 浏览器（v1.1.2）：start 自动启动 Edge
 
-```bash
-# 检查环境
-boss-hr doctor
+正常流程**直接** `boss-hr start`，不需先 doctor：
 
-# 自动启动专用 Edge（带 --remote-debugging-port=9222）
-boss-hr doctor --launch-edge
-```
+- 9222 已开且已登录 → 立即进入 step 1 业务
+- 9222 未开 → 自动启动专用 Edge（`%LOCALAPPDATA%\boss-hr-edge-profile`，
+  `--remote-debugging-port=9222`，**不**碰日常 Edge profile）
+- 自动启动后未登录 → 打开 BOSS 登录页，轮询默认 20 秒
+- 超时未登录 → `status=waiting_user_login`（**不是错误**），
+  `next_action=retry_same_command`，**不创建 run**；
+  智能体停下，让用户在专用 Edge 中登录后重试同一条 start
 
-期望 `status=ready` 才进入 step 1。`status=action_required` 时按
-`error.remediation` 引导用户。
+调试可选：`--no-auto-launch` 关闭自动启动；`--login-wait-seconds N` 调整等登录秒数。
+
+`boss-hr doctor` 仍是独立诊断工具，仅在自动启动失败时使用。
 
 ## 标准流程
 
@@ -237,6 +254,7 @@ boss-hr status --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | 返回 status | 含义 | 智能体动作 |
 |---|---|---|
 | `waiting_user_confirmation` | start 完成，等用户回复"继续" | **停下**，告知用户去 BOSS 推荐牛人页面调整筛选条件 |
+| `waiting_user_login` | start 自动启动 Edge 后用户未登录超时 | **停下**，告知用户已在专用 Edge 中打开登录页，登录后重试同一条 start |
 | `confirmed` | confirm 完成 | 进入 fetch |
 | `candidates_fetched` | fetch 完成 | 进入 score 循环 |
 | `waiting_llm` | score 需要 LLM 评一位 | 读 input_file、评、写 output_file、**再次调** `boss-hr score` |
