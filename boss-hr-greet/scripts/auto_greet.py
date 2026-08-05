@@ -321,10 +321,13 @@ def _extract_card_identity(card_js: dict) -> dict:
         return out
 
     # encrypt_geek_id 来源（按优先级取第一个非空）
+    # 真实 BOSS DOM 用的属性是 data-geek / data-geekid（实测），
+    # 其他只是兼容 / 兜底
     gid_candidates = [
+        card_js.get('data_geek'),
+        card_js.get('data_geekid'),
         card_js.get('data_geek_id'),
         card_js.get('data_encrypt_geek_id'),
-        card_js.get('data_geekid'),
         card_js.get('encrypt_geek_id'),
         card_js.get('security_id'),
         # 从 href 参数（如 /web/chat/geek/...&geekId=xxx）解析
@@ -368,18 +371,21 @@ _CARD_SCAN_JS = r"""() => {
         const card = b.closest('li.card-item');
         if (!card) continue;
 
-        // 1) encrypt_geek_id：多个 DOM 来源
+        // 1) encrypt_geek_id：多个 DOM 来源（真实 BOSS DOM 用 data-geek + data-geekid）
         let gid = '';
-        // (a) 元素属性
-        gid = card.getAttribute('data-geek-id')
-           || card.getAttribute('data-encrypt-geek-id')
+        // (a) li 元素自身属性
+        gid = card.getAttribute('data-geek')
            || card.getAttribute('data-geekid')
+           || card.getAttribute('data-geek-id')
+           || card.getAttribute('data-encrypt-geek-id')
            || card.getAttribute('data-uid')
            || '';
-        // (b) 卡片内任意 [data-geek-id] / [data-uid]
+        // (b) 卡片内任意 [data-geek / data-geekid / data-geek-id / data-uid] 元素
         if (!gid) {
-            const tagged = card.querySelector('[data-geek-id], [data-encrypt-geek-id], [data-uid]');
-            if (tagged) gid = tagged.getAttribute('data-geek-id')
+            const tagged = card.querySelector('[data-geek], [data-geekid], [data-geek-id], [data-encrypt-geek-id], [data-uid]');
+            if (tagged) gid = tagged.getAttribute('data-geek')
+                        || tagged.getAttribute('data-geekid')
+                        || tagged.getAttribute('data-geek-id')
                         || tagged.getAttribute('data-encrypt-geek-id')
                         || tagged.getAttribute('data-uid')
                         || '';
@@ -807,15 +813,19 @@ _FIND_CARD_JS = r"""(args) => {
         const card = b.closest('li.card-item');
         if (!card) continue;
 
-        // 抽 encrypt_geek_id
+        // 抽 encrypt_geek_id（真实 BOSS DOM：data-geek + data-geekid）
         let card_gid = '';
-        card_gid = card.getAttribute('data-geek-id')
+        card_gid = card.getAttribute('data-geek')
+                 || card.getAttribute('data-geekid')
+                 || card.getAttribute('data-geek-id')
                  || card.getAttribute('data-encrypt-geek-id')
                  || card.getAttribute('data-uid')
                  || '';
         if (!card_gid) {
-            const tagged = card.querySelector('[data-geek-id], [data-encrypt-geek-id], [data-uid]');
-            if (tagged) card_gid = tagged.getAttribute('data-geek-id')
+            const tagged = card.querySelector('[data-geek], [data-geekid], [data-geek-id], [data-encrypt-geek-id], [data-uid]');
+            if (tagged) card_gid = tagged.getAttribute('data-geek')
+                              || tagged.getAttribute('data-geekid')
+                              || tagged.getAttribute('data-geek-id')
                               || tagged.getAttribute('data-encrypt-geek-id')
                               || tagged.getAttribute('data-uid')
                               || '';
@@ -897,14 +907,18 @@ _FIND_BTN_JS = r"""(args) => {
 
     for (let i = 0; i < lis.length; i++) {
         const li = lis[i];
-        // encrypt_geek_id 锁定（优先）
-        let card_gid = li.getAttribute('data-geek-id')
+        // encrypt_geek_id 锁定（真实 BOSS DOM：data-geek + data-geekid）
+        let card_gid = li.getAttribute('data-geek')
+                    || li.getAttribute('data-geekid')
+                    || li.getAttribute('data-geek-id')
                     || li.getAttribute('data-encrypt-geek-id')
                     || li.getAttribute('data-uid')
                     || '';
         if (!card_gid) {
-            const tagged = li.querySelector('[data-geek-id], [data-encrypt-geek-id], [data-uid]');
-            if (tagged) card_gid = tagged.getAttribute('data-geek-id')
+            const tagged = li.querySelector('[data-geek], [data-geekid], [data-geek-id], [data-encrypt-geek-id], [data-uid]');
+            if (tagged) card_gid = tagged.getAttribute('data-geek')
+                              || tagged.getAttribute('data-geekid')
+                              || tagged.getAttribute('data-geek-id')
                               || tagged.getAttribute('data-encrypt-geek-id')
                               || tagged.getAttribute('data-uid')
                               || '';
