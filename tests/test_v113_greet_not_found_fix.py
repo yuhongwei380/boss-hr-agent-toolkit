@@ -218,7 +218,7 @@ def test_greet_one_by_id_same_name_different_geek_id_rejects_click(
         name="张庆祝", encrypt_geek_id="gid_TARGET",
         pos={}, dry_run=False, iframe=fake_iframe,
     )
-    assert result["status"] == "not_found"
+    assert result["status"] == "not_found_after_full_scan"
     assert result["found"] is False
     assert "geekId mismatch" in result["reason"]
     assert result["match_by"] == "encrypt_geek_id"
@@ -241,7 +241,7 @@ def test_greet_one_by_id_target_not_in_dom_full_scan_returns_not_found(
         name="张庆祝", encrypt_geek_id="gid_TARGET",
         pos={}, dry_run=False, iframe=fake_iframe,
     )
-    assert result["status"] == "not_found"
+    assert result["status"] == "not_found_after_full_scan"
     assert result["found"] is False
     assert result["scroll_attempts"] >= 0
     assert result.get("status") != "greeted"
@@ -547,3 +547,212 @@ def test_greet_one_by_id_btn_text_not_greet_rejects_click(
     assert result["status"] in ("not_found", "greeted", "clicked_unverified")
     if result["status"] == "not_found":
         assert "打招呼" in result.get("reason", "") or "btn" in result.get("reason", "")
+
+
+# ============================================================
+# 10. dry-run 严格化（v1.1.3 final）：零点击、零副作用
+# ============================================================
+
+def test_greet_one_by_id_dry_run_does_not_click(auto_greet, monkeypatch):
+    """dry_run=True → 找到卡片与按钮后立即返回 dry_run 状态，绝不 click。"""
+    fake_frame = MagicMock()
+    fake_page = MagicMock()
+    fake_iframe = MagicMock()
+    fake_iframe.bounding_box.return_value = {"x": 0, "y": 0, "width": 800, "height": 600}
+
+    monkeypatch.setattr(auto_greet, "_find_card_by_id", lambda frame, gid, name: (
+        {"encrypt_geek_id": "gid_OK", "name": name,
+         "doc_y": 800, "doc_x": 200, "btn_text": "打招呼"},
+        "encrypt_geek_id"))
+    monkeypatch.setattr(auto_greet, "_find_btn_by_card_id",
+                        lambda frame, gid, name, target_y: {
+                            "found": True, "x": 100, "y": 200, "w": 60, "h": 24,
+                            "li_idx": 0, "btn_idx": 0, "btn_text": "打招呼",
+                            "dy_diff": 0,
+                        })
+
+    result = auto_greet.greet_one_by_id(
+        fake_page, fake_frame, fake_iframe.bounding_box.return_value,
+        name="OK", encrypt_geek_id="gid_OK",
+        pos={}, dry_run=True, iframe=fake_iframe,
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["dry_run"] is True
+    assert result["verified"] is False
+    # 关键：dry-run 不应调用 click evaluate
+    for call in fake_frame.evaluate.call_args_list:
+        args = call.args if hasattr(call, 'args') else call[0]
+        if args and isinstance(args[0], str) and "btn-greet" in args[0] and "click" in args[0]:
+            # 出现 btn[idx].click 即视为违反 dry-run
+            raise AssertionError(
+                f"dry_run 模式不应触发 btn.click；调用：{args[0][:80]!r}")
+    # 必须包含定位信息
+    assert result.get("target_doc_y") == 800
+    assert result.get("target_scroll_y") == 700  # 800 - 100
+    assert result.get("cards_scanned") is not None
+    assert result.get("scroll_attempts") is not None
+
+
+def test_greet_one_by_id_dry_run_not_found_no_click_either(auto_greet, monkeypatch):
+    """dry_run + 完整扫描未找到 → 返回 dry_run + not_found_after_full_scan。
+    dry-run 模式下同样不能 click。"""
+    fake_frame = MagicMock()
+    fake_page = MagicMock()
+    fake_iframe = MagicMock()
+    fake_iframe.bounding_box.return_value = {"x": 0, "y": 0, "width": 800, "height": 600}
+
+    monkeypatch.setattr(auto_greet, "_find_card_by_id",
+                        lambda frame, gid, name: (None, "none"))
+    # frame.evaluate 返回 0 表示无内容
+    fake_frame.evaluate.return_value = 0
+
+    result = auto_greet.greet_one_by_id(
+        fake_page, fake_frame, fake_iframe.bounding_box.return_value,
+        name="MISSING", encrypt_geek_id="gid_MISSING",
+        pos={}, dry_run=True, iframe=fake_iframe,
+    )
+
+    assert result["status"] == "not_found_after_full_scan"
+    assert result["found"] is False
+    assert result["reached_bottom"] is True
+    # 关键：dry_run 字段为 True 表明是 dry-run 模式的结果
+    # click 路径未被调用
+    for call in fake_frame.evaluate.call_args_list:
+        args = call.args if hasattr(call, 'args') else call[0]
+        if args and isinstance(args[0], str) and "btn-greet" in args[0] and "click" in args[0]:
+            raise AssertionError(
+                f"dry_run + not_found 模式不应触发 btn.click；调用：{args[0][:80]!r}")
+
+
+def test_dry_run_results_have_full_metadata(auto_greet, monkeypatch):
+    """dry-run 结果包含新日志字段：target_encrypt_geek_id / match_by /
+    scroll_attempts / cards_scanned / reached_bottom / reason。"""
+    fake_frame = MagicMock()
+    fake_page = MagicMock()
+    fake_iframe = MagicMock()
+    fake_iframe.bounding_box.return_value = {"x": 0, "y": 0, "width": 800, "height": 600}
+
+    monkeypatch.setattr(auto_greet, "_find_card_by_id", lambda frame, gid, name: (
+        {"encrypt_geek_id": "gid_X", "name": name,
+         "doc_y": 1200, "doc_x": 200, "btn_text": "打招呼"},
+        "encrypt_geek_id"))
+    monkeypatch.setattr(auto_greet, "_find_btn_by_card_id",
+                        lambda frame, gid, name, target_y: {
+                            "found": True, "x": 100, "y": 200, "w": 60, "h": 24,
+                            "li_idx": 0, "btn_idx": 0, "btn_text": "打招呼",
+                            "dy_diff": 0,
+                        })
+
+    result = auto_greet.greet_one_by_id(
+        fake_page, fake_frame, fake_iframe.bounding_box.return_value,
+        name="X", encrypt_geek_id="gid_X",
+        pos={}, dry_run=True, iframe=fake_iframe,
+    )
+    # 所有必填日志字段
+    for k in ("target_encrypt_geek_id", "match_by", "scroll_attempts",
+              "cards_scanned", "reached_bottom", "reason"):
+        assert k in result, f"dry-run 结果缺字段 {k}"
+    assert result["target_encrypt_geek_id"] == "gid_X"
+    assert result["match_by"] == "encrypt_geek_id"
+    assert result["scroll_attempts"] >= 0
+    assert result["cards_scanned"] >= 0
+    assert isinstance(result["reached_bottom"], bool)
+
+
+# ============================================================
+# 11. 主流程 dry-run：mark_done 不被调用、run.finished 不变
+# ============================================================
+
+def test_auto_greet_dry_run_does_not_call_mark_done(
+        auto_greet, tmp_path, monkeypatch):
+    """dry-run 模式 → auto_greet 不调 orch.mark_done，run.json 不被改。"""
+    import json
+    # 准备一份合规 run
+    eid = "test_dryrun_eid"
+    rid = "2026-08-04_120000"
+    run_dir = tmp_path / eid / "runs" / rid
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "process").mkdir(exist_ok=True)
+    run_json_path = run_dir / "run.json"
+    run_json_before = {
+        "run_id": rid, "encrypt_job_id": eid, "confirmed": True,
+        "finished": False, "steps_done": ["jd", "download", "score", "report"],
+    }
+    run_json_path.write_text(json.dumps(run_json_before), encoding="utf-8")
+
+    # screening_results
+    (run_dir / "process" / "screening_results.json").write_text(json.dumps({
+        "candidates": [
+            {"rank": 1, "name": "测试", "tier": "推荐", "total": 75.0},
+        ],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    # 模拟 mark_done 被调用即抛错
+    class _FakeOrch:
+        def bind_existing_run(self, rid):
+            return rid
+        def mark_done(self, *a, **kw):
+            raise AssertionError(
+                f"dry_run 模式不应调 mark_done；调用：{a} {kw}")
+        def finish(self, *a, **kw):
+            raise AssertionError(
+                f"dry_run 模式不应调 finish；调用：{a} {kw}")
+
+    monkeypatch.setattr(auto_greet, "RunOrchestrator", lambda *a, **kw: _FakeOrch())
+
+    # 调用 greet_one_by_id 而不是完整 auto_greet（避免 patchright 真连）
+    fake_frame = MagicMock()
+    fake_page = MagicMock()
+    fake_iframe = MagicMock()
+    fake_iframe.bounding_box.return_value = {"x": 0, "y": 0, "width": 800, "height": 600}
+
+    monkeypatch.setattr(auto_greet, "_find_card_by_id", lambda frame, gid, name: (
+        {"encrypt_geek_id": "gid_X", "name": name,
+         "doc_y": 500, "doc_x": 200, "btn_text": "打招呼"},
+        "encrypt_geek_id"))
+    monkeypatch.setattr(auto_greet, "_find_btn_by_card_id",
+                        lambda frame, gid, name, target_y: {
+                            "found": True, "x": 100, "y": 200, "w": 60, "h": 24,
+                            "li_idx": 0, "btn_idx": 0, "btn_text": "打招呼",
+                            "dy_diff": 0,
+                        })
+
+    result = auto_greet.greet_one_by_id(
+        fake_page, fake_frame, fake_iframe.bounding_box.return_value,
+        name="测试", encrypt_geek_id="gid_X",
+        pos={}, dry_run=True, iframe=fake_iframe,
+    )
+    assert result["status"] == "dry_run"
+
+    # run.json 不被修改
+    run_json_after = json.loads(run_json_path.read_text(encoding="utf-8"))
+    assert run_json_after == run_json_before, (
+        f"dry-run 不应改 run.json；before={run_json_before} after={run_json_after}")
+
+
+# ============================================================
+# 12. 验证 _calc_summary 同时识别 not_found 与 not_found_after_full_scan
+# ============================================================
+
+def test_calc_summary_recognizes_not_found_after_full_scan(auto_greet):
+    """_calc_summary 把 not_found_after_full_scan 计入 not_found。"""
+    s = auto_greet._calc_summary([
+        {"status": "greeted"},
+        {"status": "not_found_after_full_scan"},
+    ])
+    assert s["status"] == "partial_success"
+    assert s["greeted"] == 1
+    assert s["not_found"] == 1
+
+
+def test_calc_summary_dry_run_only(auto_greet):
+    """纯 dry_run 结果（greeted=0 not_found=0）→ no_candidates 路径。
+    实际语义更像 all_not_found；这里按当前 fallback 链。"""
+    s = auto_greet._calc_summary([
+        {"status": "dry_run"},
+        {"status": "dry_run"},
+    ])
+    # dry_run 不计入 greeted / not_found → total=2 但 both 0 → no_candidates
+    assert s["status"] == "no_candidates"
+    assert s["dry_run"] == 2

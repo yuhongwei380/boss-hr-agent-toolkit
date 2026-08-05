@@ -553,13 +553,17 @@ def scroll_iframe_smooth(frame, target_y):
 
 def greet_one_by_id(page, frame, iframe_box, name, encrypt_geek_id, pos,
                        dry_run=False, iframe=None):
-    """v1.1.3 fix: 按 encrypt_geek_id + 实时 DOM 扫描定位候选人。
+    """v1.1.3 final: 按 encrypt_geek_id + 实时 DOM 扫描定位候选人。
     关键设计：
       - encrypt_geek_id 是 BOSS 唯一身份；name 仅作 fallback
       - 实时扫描 DOM（不依赖旧的 doc_y 缓存，因虚拟列表可能已重建）
       - 找到的卡片 encrypt_geek_id 与目标不一致 → 拒绝点击（同名陷阱）
-      - 未找到 → 渐进滚动 + 重扫（最多 max_redo_scroll 次），
-        仍无 → 必要时刷新页面一次；仍无 → not_found
+      - 未找到 → 渐进滚动重扫（最多 max_redo_scroll 次）；
+        已到底（reached_bottom=True）后仍无 → not_found_after_full_scan
+      - **不刷新页面**：尊重用户当前 BOSS 页面状态（避免清空筛选条件、
+        滚动位置、已招呼候选人列表）
+      - dry_run=True → 找到后立即返回 dry_run 状态，不 click、不写 greeted、
+        不 finish run
     """
     target_gid = (encrypt_geek_id or '').strip()
     target_name = (name or '').strip()
@@ -567,19 +571,8 @@ def greet_one_by_id(page, frame, iframe_box, name, encrypt_geek_id, pos,
     # 1) 实时 DOM 扫描（用 encrypt_geek_id 找）
     found_card, match_by = _find_card_by_id(frame, target_gid, target_name)
 
-    if not found_card and pos and pos.get('doc_y'):
-        # fallback：滚到 doc_y 附近再扫一次（虚拟列表可能还没加载到该位置）
-        try:
-            frame.evaluate(
-                '(y) => window.scrollTo({top: y, behavior: "instant"})',
-                max(0, pos['doc_y'] - 200),
-            )
-            time.sleep(1.0)
-            found_card, match_by = _find_card_by_id(frame, target_gid, target_name)
-        except Exception:
-            pass
-
     scroll_attempts = 0
+    reached_bottom = False
     if not found_card:
         # 渐进滚动重扫（最多 6 次，每次 sleep 后再扫）
         for _ in range(6):
@@ -597,33 +590,40 @@ def greet_one_by_id(page, frame, iframe_box, name, encrypt_geek_id, pos,
             if found_card:
                 break
             if new_y >= cur_h:
+                reached_bottom = True
                 break  # 已到底
 
     if not found_card:
+        # 完整扫描后仍未找到 → not_found_after_full_scan
+        # 历史兼容性：CLI 仍按 not_found 计入 summary
         return {
             'name': name,
             'encrypt_geek_id': encrypt_geek_id,
             'found': False,
             'verified': False,
-            'status': 'not_found',
+            'status': 'not_found_after_full_scan',
             'match_by': 'none',
             'scroll_attempts': scroll_attempts,
             'cards_scanned': _last_scan_count(),
-            'reason': '完整扫描后仍未找到（虚拟列表已到底或目标不在当前页）',
+            'reached_bottom': reached_bottom,
+            'reason': (f'完整扫描后仍未找到（reached_bottom={reached_bottom}）；'
+                       f'虚拟列表已到底或目标不在当前页'),
         }
 
     # 2) encryptGeekId 一致性二次校验（防同名陷阱）
-    if target_gid and found_card.get('encrypt_geek_id')             and found_card['encrypt_geek_id'] != target_gid:
+    if target_gid and found_card.get('encrypt_geek_id') \
+            and found_card['encrypt_geek_id'] != target_gid:
         return {
             'name': name,
             'encrypt_geek_id': encrypt_geek_id,
             'found_card_geek_id': found_card['encrypt_geek_id'],
             'found': False,
             'verified': False,
-            'status': 'not_found',
+            'status': 'not_found_after_full_scan',
             'match_by': match_by,
             'scroll_attempts': scroll_attempts,
             'cards_scanned': _last_scan_count(),
+            'reached_bottom': reached_bottom,
             'reason': (f"geekId mismatch: target={target_gid[:14]}... "
                        f"vs card={found_card['encrypt_geek_id'][:14]}..."),
         }
@@ -647,27 +647,36 @@ def greet_one_by_id(page, frame, iframe_box, name, encrypt_geek_id, pos,
             'encrypt_geek_id': encrypt_geek_id,
             'found': True,  # 卡片找到但 btn 失效
             'verified': False,
-            'status': 'not_found',
+            'status': 'not_found_after_full_scan',
             'match_by': match_by,
             'scroll_attempts': scroll_attempts,
             'cards_scanned': _last_scan_count(),
+            'reached_bottom': reached_bottom,
             'reason': btn_info.get('reason', '卡片找到但招呼按钮不可用'),
         }
 
+    # 5) dry-run 早返：找到卡片与按钮，记录定位结果，**绝不 click**
     if dry_run:
         return {
             'name': name,
             'encrypt_geek_id': encrypt_geek_id,
+            'target_encrypt_geek_id': target_gid,
             'found': True,
             'match_by': match_by,
             'scroll_attempts': scroll_attempts,
             'cards_scanned': _last_scan_count(),
+            'reached_bottom': reached_bottom,
             'target_scroll_y': doc_y - 100,
+            'target_doc_y': doc_y,
+            'btn_text': btn_info.get('btn_text', ''),
+            'reason': (f'dry_run: 找到 (encrypt_geek_id={target_gid[:14]}... '
+                       f'doc_y={doc_y} btn_text=打招呼)；未 click'),
             'dry_run': True,
+            'verified': False,   # dry-run 不验证（也不 click）
             'status': 'dry_run',
         }
 
-    # 5) 预检阻挡层（沿用旧实现）
+    # 6) 预检阻挡层（沿用旧实现）
     try:
         page_blockers = _scan_blockers(page)
         frame_blockers = _scan_blockers(frame) if frame else []
@@ -682,15 +691,16 @@ def greet_one_by_id(page, frame, iframe_box, name, encrypt_geek_id, pos,
     except Exception:
         pass
 
-    # 6) 拟人 hover + evaluate click
+    # 7) 拟人 hover + evaluate click
     btn_idx = btn_info.get('btn_idx', -1)
     li_idx = btn_info.get('li_idx', -1)
     if btn_idx < 0 or li_idx < 0:
         return {
             'name': name, 'encrypt_geek_id': encrypt_geek_id,
-            'found': True, 'verified': False, 'status': 'not_found',
+            'found': True, 'verified': False, 'status': 'not_found_after_full_scan',
             'match_by': match_by, 'scroll_attempts': scroll_attempts,
             'cards_scanned': _last_scan_count(),
+            'reached_bottom': reached_bottom,
             'reason': 'btn/li 索引无效',
         }
 
@@ -713,9 +723,10 @@ def greet_one_by_id(page, frame, iframe_box, name, encrypt_geek_id, pos,
     if not clicked:
         return {
             'name': name, 'encrypt_geek_id': encrypt_geek_id,
-            'found': True, 'verified': False, 'status': 'not_found',
+            'found': True, 'verified': False, 'status': 'not_found_after_full_scan',
             'match_by': match_by, 'scroll_attempts': scroll_attempts,
             'cards_scanned': _last_scan_count(),
+            'reached_bottom': reached_bottom,
             'reason': f'btn_idx={btn_idx} 不存在或 text 不是"打招呼"（之前：{btn_text_before!r}）',
         }
 
@@ -984,10 +995,13 @@ def _calc_summary(greet_log: list) -> dict:
       - 'complete':        greeted=total>0 且 not_found=0
       - 'partial_success': greeted>=1 且 not_found>=1
       - 'all_not_found':   greeted=0 且 not_found>0
+
+    not_found 计数同时兼容旧 'not_found' 与新 'not_found_after_full_scan'。
     """
     greeted = sum(1 for r in greet_log if r.get('status') == 'greeted')
     unverified = sum(1 for r in greet_log if r.get('status') == 'clicked_unverified')
-    not_found = sum(1 for r in greet_log if r.get('status') == 'not_found')
+    not_found = sum(1 for r in greet_log
+                    if r.get('status') in ('not_found', 'not_found_after_full_scan'))
     dry_run = sum(1 for r in greet_log if r.get('status') == 'dry_run')
     scanned = sum(1 for r in greet_log if r.get('status') == 'scanned')
     total = len(greet_log)
@@ -1147,19 +1161,29 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
                     'reason': '' if pos else '未在当前 list 出现',
                 })
         else:
-            # ★ Step 2 (v1.1.3): 按 encrypt_geek_id + 实时 DOM 扫描逐位招呼
+            # ★ Step 2 (v1.1.3 hard): 按 encrypt_geek_id + 实时 DOM 扫描逐位招呼
             #   - 不再依赖一次性扫描结果（虚拟列表懒加载易遗漏）
-            #   - 每位独立实时扫描 + 渐进滚动重试 + 必要时刷新一次
-            #   - 找不到的也走完整流程后才记 not_found
+            #   - 每位独立实时扫描 + 渐进滚动重试
+            #   - **不刷新页面**（v1.1.3 final）：尊重用户当前 BOSS 页面状态
+            #   - 每位招呼前重新扫一遍实时 DOM（BOSS 动态换卡，剩余候选人位置随时变）
+            #   - 完整扫描（progressively scroll to bottom + 每屏 sleep）后
+            #     仍找不到 → not_found_after_full_scan
             log(output, f'目标 {len(high)} 人开始招呼（按 encrypt_geek_id 实时定位）')
 
-            refreshed_once = False
             for i, h in enumerate(high, 1):
                 name = h['name']
                 encrypt_geek_id = h.get('encrypt_geek_id', '') or ''
                 log(output, f'\n--- 招呼 [{i}/{len(high)}]: {name} gid={encrypt_geek_id[:14]}... ---')
 
-                # ★ 实时扫描 + 重试（含必要的滚动）
+                # 每位招呼前**实时**扫一遍当前 DOM（BOSS 动态换卡；
+                # 已招呼的人被 BOSS 从底部移除，剩余 doc_y 会变化）
+                pre_scan = scan_dom_cards(frame)
+                seen_ids = sorted({c.get('encrypt_geek_id') for c in pre_scan
+                                   if c.get('encrypt_geek_id')})
+
+                # ★ 实时扫描 + 重试（含渐进滚动）
+                # greet_one_by_id 内部：实时找 → 找不到则渐进滚动重扫
+                # → 完整扫描终止 → not_found_after_full_scan
                 result = greet_one_by_id(
                     page, frame, iframe_box, name, encrypt_geek_id,
                     pos={},
@@ -1167,33 +1191,19 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
                     iframe=iframe,
                 )
 
-                # 若 not_found 且尚未刷新过 → 刷新页面一次 + 重扫
-                if (result.get('status') == 'not_found'
-                        and not refreshed_once
-                        and not dry_run
-                        and not scan_only):
-                    log(output, '    [REFRESH] 完整扫描未找到，刷新页面一次再试')
-                    if _refresh_page_once(page):
-                        # 重新定位 iframe
-                        try:
-                            iframe = page.wait_for_selector('iframe', timeout=15000)
-                            frame = iframe.content_frame()
-                            iframe_box = iframe.bounding_box()
-                        except Exception:
-                            pass
-                        refreshed_once = True
-                        result = greet_one_by_id(
-                            page, frame, iframe_box, name, encrypt_geek_id,
-                            pos={},
-                            dry_run=dry_run,
-                            iframe=iframe,
-                        )
+                # 注入本次扫描元数据
+                result['target_encrypt_geek_id'] = encrypt_geek_id
+                result['unique_ids_seen'] = len(seen_ids)
+                result['reached_bottom'] = bool(result.get('reached_bottom', False))
 
                 result.update(h)  # 合并 score/tier/school
                 greet_log.append(result)
 
                 if dry_run:
-                    log(output, f'    [DRY-RUN] 找到 target_scroll_y={result.get("target_scroll_y", 0):.0f}')
+                    log(output, f'    [DRY-RUN] 找到 target_scroll_y={result.get("target_scroll_y", 0):.0f} '
+                                f'cards_scanned={result.get("cards_scanned", 0)} '
+                                f'unique_ids={len(seen_ids)} '
+                                f'scroll_attempts={result.get("scroll_attempts", 0)}')
                 elif result.get('status') == 'greeted':
                     log(output, f'    ✓ {name} 已打招呼（按钮变"继续沟通"）')
                 elif result.get('status') == 'clicked_unverified':
@@ -1201,8 +1211,8 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
                 else:
                     log(output, f'    ✗ {name} 未找到 ({result.get("reason","")[:60]})')
 
-                # 节流 3-6 秒（仅在成功招呼后；not_found 不浪费 BOSS 节奏预算）
-                if result.get('status') in ('greeted', 'clicked_unverified'):
+                # 节流 3-6 秒（仅在成功招呼后；dry-run 与 not_found 不浪费 BOSS 节奏预算）
+                if result.get('status') in ('greeted', 'clicked_unverified') and not dry_run:
                     wait = random.uniform(3, 6)
                     log(output, f'    ⏸ 节流 {wait:.1f}s')
                     time.sleep(wait)
@@ -1246,10 +1256,12 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
     # 标记 greet 步骤完成（让后续补招呼仍能跟走同一 run_id）
     # 不主动 finish()：greeting 是 run 的"延展"，报告已生成后再补招也合理
     _SAVED = True  # 招呼日志已落盘，run 保留
-    try:
-        orch.mark_done('greet', run_id=run_id)
-    except Exception as e:
-        log(output, f'⚠️  mark_done 失败（不影响招呼结果）: {e}')
+    # v1.1.3: dry-run 模式下不写 run.json（dry_run 零副作用）
+    if not dry_run:
+        try:
+            orch.mark_done('greet', run_id=run_id)
+        except Exception as e:
+            log(output, f'⚠️  mark_done 失败（不影响招呼结果）: {e}')
 
     # 是否自动 finish()
     # 2026-07-29 改进：默认招呼成功后自动 finish()，下次跑自动开新 run。
