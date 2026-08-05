@@ -104,8 +104,13 @@ def _make_run(workspace: Path, eid: str, rid: str, jn: str,
 
 
 def _write_greet_log(workspace: Path, eid: str, rid: str, jn: str,
-                     *, greeted=2, unverified=0, not_found=1) -> Path:
-    """写真实 greet_log.json（模拟 auto_greet 跑完）。"""
+                     *, greeted=3, unverified=0, not_found=0) -> Path:
+    """写真实 greet_log.json（模拟 auto_greet 跑完）。
+
+    v1.1.3：默认场景改为 complete（greeted=3 not_found=0）以匹配新
+    partial_success 语义；旧测试期望 next_action=done 的场景
+    （greeted=2 not_found=1）已迁到 partial_success 分支独立测试。
+    """
     process = workspace / eid / "runs" / rid / "process"
     process.mkdir(parents=True, exist_ok=True)
     results = []
@@ -226,12 +231,14 @@ def test_greet_counts_from_greet_log(greet_mocks):
     _make_run(tmp_path, eid, rid, jn)
     p = json.loads(_decode(_run_inproc(jn=jn, eid=eid, rid=rid).stdout))
     d = p["data"]
-    assert d["greeted"] == 2
+    # v1.1.3 fixture 默认 complete 场景（greeted=3 not_found=0）
+    assert d["greeted"] == 3
     assert d["clicked_unverified"] == 0
-    assert d["not_found"] == 1
+    assert d["not_found"] == 0
     assert d["total"] == 3
     assert d["candidates_targeted"] == 3
     assert d["no_candidates"] is False
+    assert d["partial_success_warnings"] is False
 
 
 def test_greet_log_file_is_absolute_and_exists(greet_mocks):
@@ -409,7 +416,9 @@ def test_greet_no_candidates_returns_ok_zero(monkeypatch, tmp_path):
     assert proc.returncode == 0
     p = json.loads(_decode(proc.stdout))
     assert p["ok"] is True
-    assert p["status"] == "greet_complete"
+    # v1.1.3 fix: no_candidates 路径返回独立 status
+    assert p["status"] == "no_candidates"
+    assert p["next_action"] == "done"
     d = p["data"]
     assert d["no_candidates"] is True
     assert d["greeted"] == 0

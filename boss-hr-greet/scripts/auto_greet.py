@@ -4,16 +4,23 @@
 boss-hr-greet：高分候选人自动打招呼脚本（patchright DOM 路线 · element.click）
 
 工作流：
-  1) 读 screening_results.json（最新 run）+ candidate_pool.json，按 score 阈值挑出高分名单
+  1) 读 screening_results.json（最新 run）+ recommend_geek_ids.json + candidate_pool.json，
+     按 score 阈值挑出高分名单，并反查每个目标的 encrypt_geek_id
   2) 连上 BOSS 推荐牛人页（已登录态），定位 iframe
-  3) 滚 list 每屏停下，扫当前"打招呼"按钮
-  4) 对每个高分名字（注意 name 清理"刚刚活跃"等尾巴）：
-       - 用 li:has-text(name) 找到对应候选人卡片
-       - 在卡片内 locator("button.btn-greet:has-text('打招呼')") 精确定位按钮
+  3) 渐进式滚动扫描整个 list：每屏 sleep + 收集所有候选人卡片
+     （encrypt_geek_id 是唯一身份，name 仅作 fallback）
+  4) 对每个高分目标：
+       - 按 encrypt_geek_id 在实时 DOM 中找对应 li
+       - 若未找到 → 渐进滚动 + 等待 + 重扫（有上限）；
+         完整扫描仍未找到 → 必要时刷新页面一次；
+         完整扫描 + 刷新仍没有 → not_found（记录滚动次数 + 扫描卡片数 + 原因）
+       - 找到的卡片若 encrypt_geek_id 与目标不一致 → 不得点击，记 not_found reason='geekId mismatch'
+       - 找到且 ID 一致 → 在卡片内 locator("button.btn-greet:has-text('打招呼')") 精确定位按钮
        - 用 patchright locator 拟人 click
        - 等 2 秒，按钮 text 应变"继续沟通"（验证成功）
        - 扫 iframe 看有没有"已向牛人发送招呼"对话框 → 点"知道了"
   5) 落 runs/<run_id>/process/greet_log.json + run_log.txt
+     顶层 status: complete（greeted=total）/ partial_success（greeted>=1 且 not_found>=1）/ no_candidates
 
 为什么用 locator 而不是裸坐标：
   - BOSS list 每个候选人渲染 5 列副本（横向布局），同一 (name, doc_y) 有多个按钮
@@ -26,6 +33,7 @@ boss-hr-greet：高分候选人自动打招呼脚本（patchright DOM 路线 · 
 """
 import sys, os, json, time, random, argparse, atexit
 from datetime import datetime
+from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
 import fix_encoding  # noqa: E402
@@ -118,6 +126,45 @@ def maybe_finish(orch, run_id: str, greeted_count: int, *,
     return True
 
 
+def _geek_id_lookup_paths(job_dir: str, run_id: str) -> list[str]:
+    """列出可能含 encrypt_geek_id 反查表的文件，按优先级返回。"""
+    paths = []
+    run_dir = os.path.join(job_dir, 'runs', run_id)
+    paths.append(os.path.join(run_dir, 'process', 'recommend_geek_ids.json'))
+    paths.append(os.path.join(run_dir, 'process', 'new_resumes.json'))
+    return [p for p in paths if os.path.exists(p)]
+
+
+def _build_geek_id_index(job_dir: str, run_id: str) -> dict[str, str]:
+    """name(去空白) → encrypt_geek_id 反查表。
+    优先 recommend_geek_ids.json（BOSS 实时返回，字段最权威）；
+    兜底 new_resumes.json（_meta.encrypt_geek_id）。
+    同名多个 geekId 时只保留第一次出现（DOM 上若有同名卡片，靠
+    encrypt_geek_id 二次校验，避免误发）。
+    """
+    index: dict[str, str] = {}
+    for path in _geek_id_lookup_paths(job_dir, run_id):
+        try:
+            data = json.load(open(path, encoding='utf-8'))
+        except Exception:
+            continue
+        items = data if isinstance(data, list) else []
+        for item in items:
+            gid = (item.get('encryptGeekId')
+                   or (item.get('_meta') or {}).get('encrypt_geek_id')
+                   or '')
+            nm = (item.get('mateName')
+                  or item.get('name')
+                  or (item.get('_meta') or {}).get('name')
+                  or '').strip()
+            if gid and nm and nm not in index:
+                index[nm] = gid
+        if index:
+            # 第一个有数据的文件就够了（recommend_geek_ids 已含全部候选人）
+            break
+    return index
+
+
 def load_high_score_candidates(job_dir, run_id, score_threshold, only_names=None):
     """从指定 run 的 process/screening_results.json 读高分候选。
 
@@ -125,6 +172,11 @@ def load_high_score_candidates(job_dir, run_id, score_threshold, only_names=None
       - run_id 必填（数据边界）
       - 不再扫 runs/*/ 找"最新" —— 那是智能体偷懒入口
       - 找不到 screening_results.json → 高分列表为空，由调用方决定
+
+    2026-08-04 重构（fix not_found bug）：
+      - 增加 encrypt_geek_id 字段：从 recommend_geek_ids.json /
+        new_resumes.json 按 name 反查（BOSS 真实身份标识）
+      - DOM 扫描时 encrypt_geek_id 是唯一身份，name 仅作 fallback
 
     --only-names 模式：如果名单里的人在 screening_results 里找不到，会回退到
     state/candidate_pool.json 兜底（仅用于打招呼定位，不要求评分）。
@@ -149,6 +201,7 @@ def load_high_score_candidates(job_dir, run_id, score_threshold, only_names=None
                 'school': c.get('school', ''),
                 'work_years': c.get('work_years', ''),
                 'current_role': c.get('current_role', ''),
+                'encrypt_geek_id': '',  # 后补
             })
 
     # ★ --only-names 模式兜底：screening 里没的人，从 candidate_pool.json 补
@@ -183,19 +236,36 @@ def load_high_score_candidates(job_dir, run_id, score_threshold, only_names=None
                         })
         print(f'按 --only-names 过滤：{before} → {len(high)} 人')
 
-    # 从 candidate_pool.json 反查 encrypt_geek_id（给高分列表里没 geek_id 的补）
-    pool_path = os.path.join(job_dir, 'state', 'candidate_pool.json')
-    name_to_id = {}
-    if os.path.exists(pool_path):
-        pool = json.load(open(pool_path, encoding='utf-8')).get('items', {})
-        for k, item in pool.items():
-            n = item.get('name', '').strip()
-            if n:
-                name_to_id[n] = item.get('encrypt_geek_id', '')
+    # ★ 关键：name → encrypt_geek_id 反查（BOSS 唯一身份）
+    # 优先 recommend_geek_ids.json（权威）；兜底 candidate_pool.json / state/resumes_master.json
+    geek_index = _build_geek_id_index(job_dir, run_id)
+    # 补 candidate_pool / resumes_master
+    for fallback in [
+        os.path.join(job_dir, 'state', 'candidate_pool.json'),
+        os.path.join(job_dir, 'state', 'resumes_master.json'),
+    ]:
+        if os.path.exists(fallback):
+            try:
+                data = json.load(open(fallback, encoding='utf-8'))
+                items = (data.get('items') if isinstance(data, dict) else data) or {}
+                if isinstance(items, dict):
+                    for k, item in items.items():
+                        gid = item.get('encrypt_geek_id', '')
+                        nm = (item.get('name') or '').strip()
+                        if gid and nm and nm not in geek_index:
+                            geek_index[nm] = gid
+                elif isinstance(items, list):
+                    for item in items:
+                        gid = item.get('encrypt_geek_id', '')
+                        nm = (item.get('name') or '').strip()
+                        if gid and nm and nm not in geek_index:
+                            geek_index[nm] = gid
+            except Exception:
+                pass
 
     for h in high:
         if not h.get('encrypt_geek_id'):
-            h['encrypt_geek_id'] = name_to_id.get(h['name'].strip(), '')
+            h['encrypt_geek_id'] = geek_index.get(h['name'].strip(), '')
 
     return high
 
@@ -236,53 +306,239 @@ def count_greet_buttons(frame):
     return frame.locator('button.btn-greet').count()
 
 
-def scan_and_record_positions(frame, scroll_first=True):
-    """一次性扫描整个 iframe DOM，记所有候选人 doc_y（绝对坐标）。
+def _extract_card_identity(card_js: dict) -> dict:
+    """从卡片 JS object 抽 encrypt_geek_id / name / doc_y / doc_x。
+    多个 DOM 来源（属性 / href / data-*），按优先级。
+    """
+    out = {
+        'encrypt_geek_id': '',
+        'name': '',
+        'doc_y': 0,
+        'doc_x': 0,
+        'btn_text': '',
+    }
+    if not isinstance(card_js, dict):
+        return out
 
-    关键设计：
-      - BOSS list 懒加载到 DOM 后，getBoundingClientRect() 返回视口相对坐标
-        加 scrollY/scrollX 才能得到稳定"绝对文档坐标"
-      - 先滚到底再滚回顶：触发懒加载 + 取稳定坐标
-      - 一次 evaluate 扫全所有 li.card-item → 比分屏扫快、准
-    返回 {name: {doc_y, doc_x, width, height, btn_text}}
+    # encrypt_geek_id 来源（按优先级取第一个非空）
+    gid_candidates = [
+        card_js.get('data_geek_id'),
+        card_js.get('data_encrypt_geek_id'),
+        card_js.get('data_geekid'),
+        card_js.get('encrypt_geek_id'),
+        card_js.get('security_id'),
+        # 从 href 参数（如 /web/chat/geek/...&geekId=xxx）解析
+        _query_param(card_js.get('href', ''), 'geekId'),
+        _query_param(card_js.get('href', ''), 'encryptGeekId'),
+        _query_param(card_js.get('href', ''), 'securityId'),
+    ]
+    for c in gid_candidates:
+        if c:
+            out['encrypt_geek_id'] = str(c).strip()
+            break
+
+    out['name'] = (card_js.get('name') or '').strip()
+    out['doc_y'] = int(card_js.get('doc_y') or 0)
+    out['doc_x'] = int(card_js.get('doc_x') or 0)
+    out['btn_text'] = (card_js.get('btn_text') or '').strip()
+    return out
+
+
+def _query_param(href: str, key: str) -> str:
+    """从 URL 查 query 参数（极简版，足够处理 BOSS 实际 href 形态）。"""
+    if not href or '?' not in href:
+        return ''
+    try:
+        from urllib.parse import urlparse, parse_qs
+        qs = parse_qs(urlparse(href).query)
+        v = qs.get(key, [''])[0]
+        return v or ''
+    except Exception:
+        return ''
+
+
+# DOM 卡片扫描 JS（返回当前 DOM 中所有候选人卡片的身份 + 坐标）
+# encryptGeekId 是 BOSS 唯一身份，name 仅作 fallback
+_CARD_SCAN_JS = r"""() => {
+    const out = [];
+    const btns = document.querySelectorAll('button.btn-greet');
+    for (const b of btns) {
+        const t = (b.textContent || '').trim();
+        if (t !== '打招呼') continue;  // 已招呼 / 其它按钮不算
+        const card = b.closest('li.card-item');
+        if (!card) continue;
+
+        // 1) encrypt_geek_id：多个 DOM 来源
+        let gid = '';
+        // (a) 元素属性
+        gid = card.getAttribute('data-geek-id')
+           || card.getAttribute('data-encrypt-geek-id')
+           || card.getAttribute('data-geekid')
+           || card.getAttribute('data-uid')
+           || '';
+        // (b) 卡片内任意 [data-geek-id] / [data-uid]
+        if (!gid) {
+            const tagged = card.querySelector('[data-geek-id], [data-encrypt-geek-id], [data-uid]');
+            if (tagged) gid = tagged.getAttribute('data-geek-id')
+                        || tagged.getAttribute('data-encrypt-geek-id')
+                        || tagged.getAttribute('data-uid')
+                        || '';
+        }
+        // (c) 卡片内第一个 href 含 geekId 的 <a>
+        if (!gid) {
+            const anchors = card.querySelectorAll('a[href]');
+            for (const a of anchors) {
+                const href = a.getAttribute('href') || '';
+                const m = href.match(/[?&](?:geekId|encryptGeekId|securityId|geek_id)=([^&]+)/);
+                if (m) { gid = decodeURIComponent(m[1]); break; }
+            }
+        }
+
+        // 2) name
+        let name = '';
+        const nameEl = card.querySelector('[class*="name"]')
+                     || card.querySelector('h3, h4');
+        if (nameEl) {
+            name = (nameEl.textContent || '').trim()
+                .replace(/\s*(刚刚活跃|今日活跃|3日内活跃|本周活跃|2周内活跃|本月活跃)\s*$/, '')
+                .trim();
+        }
+
+        // 3) 坐标（绝对 doc_y）
+        const rect = b.getBoundingClientRect();
+        const doc_y = Math.round(rect.top + window.scrollY);
+        const doc_x = Math.round(rect.left + window.scrollX);
+
+        out.push({
+            encrypt_geek_id: gid,
+            name: name,
+            doc_y: doc_y,
+            doc_x: doc_x,
+            btn_text: t,
+            btn_count: 1,
+        });
+    }
+    return out;
+}"""
+
+
+def scan_dom_cards(frame) -> list[dict]:
+    """扫当前 DOM 中所有候选人卡片（去重 by encrypt_geek_id）。
+    不滚动、不刷新。返回 [{encrypt_geek_id, name, doc_y, doc_x, btn_text}, ...]
+    """
+    raw = frame.evaluate(_CARD_SCAN_JS) or []
+    seen: dict[str, dict] = {}
+    no_id: list[dict] = []
+    for r in raw:
+        rec = _extract_card_identity(r)
+        if rec['encrypt_geek_id']:
+            # 同 ID 多张卡（如横向布局）只保留 doc_y 最小（最靠前）
+            key = rec['encrypt_geek_id']
+            if key not in seen or rec['doc_y'] < seen[key]['doc_y']:
+                seen[key] = rec
+        else:
+            no_id.append(rec)
+    return list(seen.values()) + no_id
+
+
+def scan_all_cards_progressively(frame, *, max_scroll_steps: int = 30,
+                                 step_pause_sec: float = 0.8,
+                                 settle_extra_sec: float = 1.2) -> list[dict]:
+    """渐进式滚动扫描整个 list：每次滚一屏 + 收集 + 滚下一屏，
+    直到 scrollHeight 不再增长 + 最后一屏无新卡。返回去重后的卡片列表。
+
+    BOSS 推荐牛人页用虚拟列表 / 懒加载：一次性 scrollHeight 滚到底
+    可能只加载当时可见的 li；渐进式滚动能稳定触发逐屏加载。
+    """
+    cards_by_id: dict[str, dict] = {}
+    cards_no_id: list[dict] = []
+    seen_signatures: set[str] = set()
+
+    # 先回到顶部
+    frame.evaluate(r'() => window.scrollTo({top: 0, behavior: "instant"})')
+    time.sleep(0.5)
+
+    last_scroll_y = -1
+    no_growth_steps = 0
+    for step in range(max_scroll_steps):
+        cur_y = frame.evaluate('() => window.scrollY')
+        cur_h = frame.evaluate('() => document.documentElement.scrollHeight')
+        viewport_h = frame.evaluate('() => window.innerHeight')
+
+        # 扫当前可见
+        batch = scan_dom_cards(frame)
+        for c in batch:
+            sig = f"{c['encrypt_geek_id']}|{c['name']}|{c['doc_y']}"
+            if sig in seen_signatures:
+                continue
+            seen_signatures.add(sig)
+            if c['encrypt_geek_id']:
+                key = c['encrypt_geek_id']
+                if key not in cards_by_id or c['doc_y'] < cards_by_id[key]['doc_y']:
+                    cards_by_id[key] = c
+            else:
+                cards_no_id.append(c)
+
+        # 滚下一屏
+        new_y = min(cur_y + max(int(viewport_h * 0.85), 600), cur_h)
+        if new_y >= cur_h or cur_y == new_y:
+            no_growth_steps += 1
+            if no_growth_steps >= 2:
+                break
+        else:
+            no_growth_steps = 0
+            frame.evaluate('(y) => window.scrollTo({top: y, behavior: "instant"})', new_y)
+            time.sleep(step_pause_sec)
+
+        last_scroll_y = cur_y
+        if last_scroll_y == new_y and step > 5:
+            # 滚到底了
+            break
+
+    # 收尾：滚回顶再等一下，确保最顶部卡片稳定
+    frame.evaluate(r'() => window.scrollTo({top: 0, behavior: "instant"})')
+    time.sleep(settle_extra_sec)
+    # 再次扫顶部（捕获收尾时刚加载的）
+    top_batch = scan_dom_cards(frame)
+    for c in top_batch:
+        if c['encrypt_geek_id']:
+            key = c['encrypt_geek_id']
+            if key not in cards_by_id or c['doc_y'] < cards_by_id[key]['doc_y']:
+                cards_by_id[key] = c
+        elif not any(x['name'] == c['name'] and x['doc_y'] == c['doc_y']
+                     for x in cards_no_id):
+            cards_no_id.append(c)
+
+    return list(cards_by_id.values()) + cards_no_id
+
+
+def scan_and_record_positions(frame, scroll_first=True):
+    """保留旧接口签名（兼容 --skip-scan 模式）。
+    实际上扫描整个 list 并按 encrypt_geek_id 去重；name 仅 fallback。
+    返回 {encrypt_geek_id: {doc_y, doc_x, name, btn_text}}。
+    若 encrypt_geek_id 为空则用 name 作 key（fallback 路径）。
     """
     if scroll_first:
-        # 先滚到底触发懒加载（让所有 li.card-item 进入 DOM）
+        # 兼容旧行为：仍尝试滚一次；扫描本身已用渐进式，所以这一步只 sleep 一下
         frame.evaluate(r'() => window.scrollTo({top: document.documentElement.scrollHeight, behavior: "instant"})')
         time.sleep(1.5)
-        # 再滚回顶，取稳定绝对坐标
         frame.evaluate(r'() => window.scrollTo({top: 0, behavior: "instant"})')
         time.sleep(0.8)
-
-    result = frame.evaluate(r"""() => {
-        const out = {};
-        const seen = new Set();
-        const btns = document.querySelectorAll('button.btn-greet');
-        for (const b of btns) {
-            const t = (b.textContent || '').trim();
-            // 只接受"打招呼"按钮（"继续沟通"说明已招呼过）
-            if (t !== '打招呼') continue;
-            const card = b.closest('li.card-item');
-            if (!card) continue;
-            let nameEl = card.querySelector('[class*="name"]');
-            if (!nameEl) nameEl = card.querySelector('h3, h4');
-            const name = nameEl ? (nameEl.textContent || '').trim() : '';
-            const clean = name.replace(/\s*(刚刚活跃|今日活跃|3日内活跃|本周活跃|2周内活跃|本月活跃)\s*$/, '').trim();
-            if (!clean || seen.has(clean)) continue;
-            seen.add(clean);
-            const rect = b.getBoundingClientRect();
-            // ★ 转成绝对 doc 坐标：rect.top + window.scrollY
-            out[clean] = {
-                doc_y: Math.round(rect.top + window.scrollY),
-                doc_x: Math.round(rect.left + window.scrollX),
-                width: Math.round(rect.width),
-                height: Math.round(rect.height),
-                btn_text: t,
-            };
-        }
-        return out;
-    }""")
-    return result or {}
+    cards = scan_all_cards_progressively(frame)
+    positions = {}
+    for c in cards:
+        key = c['encrypt_geek_id'] or c['name']
+        if not key:
+            continue
+        if key not in positions or c['doc_y'] < positions[key]['doc_y']:
+            positions[key] = {
+                'doc_y': c['doc_y'],
+                'doc_x': c['doc_x'],
+                'name': c['name'],
+                'encrypt_geek_id': c['encrypt_geek_id'],
+                'btn_text': c['btn_text'],
+            }
+    return positions
 
 
 def scroll_iframe_smooth(frame, target_y):
@@ -295,304 +551,477 @@ def scroll_iframe_smooth(frame, target_y):
     time.sleep(random.uniform(0.8, 1.2))
 
 
-def greet_one_by_position(page, frame, iframe_box, name, pos, dry_run=False, iframe=None):
-    """按 doc_y 直接 scrollTo + click（不走 locator 反复跳）。
-
-    关键：list 滚到底后稳定，但每次招呼完一个人 BOSS 会从底部移除，
-    引起 list 整体"上移"。如果从上往下招呼，doc_y 会失效；
-    倒序招呼时已招呼的人在底部，中部以上的人 doc_y 不受影响。
+def greet_one_by_id(page, frame, iframe_box, name, encrypt_geek_id, pos,
+                       dry_run=False, iframe=None):
+    """v1.1.3 fix: 按 encrypt_geek_id + 实时 DOM 扫描定位候选人。
+    关键设计：
+      - encrypt_geek_id 是 BOSS 唯一身份；name 仅作 fallback
+      - 实时扫描 DOM（不依赖旧的 doc_y 缓存，因虚拟列表可能已重建）
+      - 找到的卡片 encrypt_geek_id 与目标不一致 → 拒绝点击（同名陷阱）
+      - 未找到 → 渐进滚动 + 重扫（最多 max_redo_scroll 次），
+        仍无 → 必要时刷新页面一次；仍无 → not_found
     """
-    doc_y = pos['doc_y']
-    doc_x = pos.get('doc_x', 0)
+    target_gid = (encrypt_geek_id or '').strip()
+    target_name = (name or '').strip()
 
-    # 0) 招呼前预检：page 顶层 + iframe 内有没有 modal/drawer/overlay（之前残留的候选人详情页）
-    #    存在就尝试关掉（按 Esc 或点关闭按钮），否则 click 会被挡住
-    def _scan_blockers(target_frame):
-        return target_frame.evaluate(r"""() => {
-            const out = [];
-            // 1) 简历详情（BOSS 推荐页点 li 卡非 btn 区域会打开 .resume-detail-wrap drawer）
-            for (const sel of ['.resume-detail-wrap', '.geek-resume', '[class*="resume-detail"]',
-                               '[class*="ResumeDetail"]', '[class*="geek-detail"]']) {
-                const els = document.querySelectorAll(sel);
-                for (const e of els) {
-                    const r = e.getBoundingClientRect();
-                    if (r.width > 200 && r.height > 200) {
-                        const cs = getComputedStyle(e);
-                        if (cs.display !== 'none' && cs.visibility !== 'hidden') {
-                            out.push({sel: sel, cls: e.className.toString().slice(0, 50),
-                                    w: r.width, h: r.height, z: cs.zIndex,
-                                    text: (e.innerText||'').slice(0,60).replace(/\s+/g,' ')});
-                        }
-                    }
-                }
-            }
-            // 2) 通用 modal/dialog
-            for (const sel of ['[class*="modal"]', '[class*="drawer"]', '[class*="dialog"]',
-                               '[class*="mask"]', '[class*="overlay"]']) {
-                const els = document.querySelectorAll(sel);
-                for (const e of els) {
-                    const r = e.getBoundingClientRect();
-                    if (r.width > 300 && r.height > 200) {
-                        const cs = getComputedStyle(e);
-                        if (cs.display !== 'none' && cs.visibility !== 'hidden') {
-                            out.push({sel: sel, cls: e.className.toString().slice(0, 50),
-                                    w: r.width, h: r.height, z: cs.zIndex,
-                                    text: (e.innerText||'').slice(0,60).replace(/\s+/g,' ')});
-                        }
-                    }
-                }
-            }
-            return out;
-        }""")
+    # 1) 实时 DOM 扫描（用 encrypt_geek_id 找）
+    found_card, match_by = _find_card_by_id(frame, target_gid, target_name)
 
-    def _try_close_blockers(target_frame):
-        """尝试关掉检测到的所有阻挡层。返回是否关掉了。"""
-        # 1) 按 Esc
+    if not found_card and pos and pos.get('doc_y'):
+        # fallback：滚到 doc_y 附近再扫一次（虚拟列表可能还没加载到该位置）
         try:
-            page.keyboard.press('Escape')
-            time.sleep(0.4)
+            frame.evaluate(
+                '(y) => window.scrollTo({top: y, behavior: "instant"})',
+                max(0, pos['doc_y'] - 200),
+            )
+            time.sleep(1.0)
+            found_card, match_by = _find_card_by_id(frame, target_gid, target_name)
         except Exception:
             pass
-        # 2) iframe 内找 close 按钮
-        try:
-            closed = target_frame.evaluate(r"""() => {
-                let closed_any = false;
-                // 简历详情 drawer 的关闭按钮
-                for (const sel of ['.resume-detail-wrap .close', '.resume-detail-wrap [class*="close"]',
-                                   '.geek-resume .close', '[class*="resume-detail"] [class*="close"]',
-                                   '[class*="detail"] [class*="close"]',
-                                   '[class*="close"]', '[aria-label="close"]',
-                                   '[class*="cancel"]', 'button.close']) {
-                    const els = document.querySelectorAll(sel);
-                    for (const e of els) {
-                        if (e.offsetWidth > 0 && e.offsetHeight > 0) {
-                            e.click();
-                            closed_any = true;
-                            break;
-                        }
-                    }
-                    if (closed_any) break;
-                }
-                return closed_any;
-            }""")
-            if closed:
-                time.sleep(0.5)
-                return True
-        except Exception:
-            pass
-        return False
 
+    scroll_attempts = 0
+    if not found_card:
+        # 渐进滚动重扫（最多 6 次，每次 sleep 后再扫）
+        for _ in range(6):
+            scroll_attempts += 1
+            try:
+                cur_y = frame.evaluate('() => window.scrollY')
+                cur_h = frame.evaluate('() => document.documentElement.scrollHeight')
+                vh = frame.evaluate('() => window.innerHeight')
+                new_y = min(cur_y + max(int(vh * 0.85), 600), cur_h)
+                frame.evaluate('(y) => window.scrollTo({top: y, behavior: "instant"})', new_y)
+                time.sleep(1.2)
+            except Exception:
+                break
+            found_card, match_by = _find_card_by_id(frame, target_gid, target_name)
+            if found_card:
+                break
+            if new_y >= cur_h:
+                break  # 已到底
+
+    if not found_card:
+        return {
+            'name': name,
+            'encrypt_geek_id': encrypt_geek_id,
+            'found': False,
+            'verified': False,
+            'status': 'not_found',
+            'match_by': 'none',
+            'scroll_attempts': scroll_attempts,
+            'cards_scanned': _last_scan_count(),
+            'reason': '完整扫描后仍未找到（虚拟列表已到底或目标不在当前页）',
+        }
+
+    # 2) encryptGeekId 一致性二次校验（防同名陷阱）
+    if target_gid and found_card.get('encrypt_geek_id')             and found_card['encrypt_geek_id'] != target_gid:
+        return {
+            'name': name,
+            'encrypt_geek_id': encrypt_geek_id,
+            'found_card_geek_id': found_card['encrypt_geek_id'],
+            'found': False,
+            'verified': False,
+            'status': 'not_found',
+            'match_by': match_by,
+            'scroll_attempts': scroll_attempts,
+            'cards_scanned': _last_scan_count(),
+            'reason': (f"geekId mismatch: target={target_gid[:14]}... "
+                       f"vs card={found_card['encrypt_geek_id'][:14]}..."),
+        }
+
+    # 3) 滚到候选人位置（视口顶部留 100px 余量）
+    doc_y = found_card['doc_y']
+    doc_x = found_card.get('doc_x', 0)
     try:
-        # 检查 page 顶层
+        viewport_h = frame.evaluate("() => window.innerHeight")
+        target_y = max(0, doc_y - 100)
+        scroll_iframe_smooth(frame, target_y)
+        time.sleep(0.3)
+    except Exception:
+        pass
+
+    # 4) 实时找按钮（encrypt_geek_id 锁定 li → 找 btn）
+    btn_info = _find_btn_by_card_id(frame, target_gid, target_name, target_y=doc_y)
+    if not btn_info.get('found'):
+        return {
+            'name': name,
+            'encrypt_geek_id': encrypt_geek_id,
+            'found': True,  # 卡片找到但 btn 失效
+            'verified': False,
+            'status': 'not_found',
+            'match_by': match_by,
+            'scroll_attempts': scroll_attempts,
+            'cards_scanned': _last_scan_count(),
+            'reason': btn_info.get('reason', '卡片找到但招呼按钮不可用'),
+        }
+
+    if dry_run:
+        return {
+            'name': name,
+            'encrypt_geek_id': encrypt_geek_id,
+            'found': True,
+            'match_by': match_by,
+            'scroll_attempts': scroll_attempts,
+            'cards_scanned': _last_scan_count(),
+            'target_scroll_y': doc_y - 100,
+            'dry_run': True,
+            'status': 'dry_run',
+        }
+
+    # 5) 预检阻挡层（沿用旧实现）
+    try:
         page_blockers = _scan_blockers(page)
-        # 检查 iframe 内
         frame_blockers = _scan_blockers(frame) if frame else []
         blockers = page_blockers + frame_blockers
         if blockers:
             print(f'  [WARN] 发现 {len(blockers)} 个阻挡层', flush=True)
-            for b in blockers[:3]:
-                print(f'    - sel={b.get("sel")} cls={b.get("cls")} {b.get("w")}x{b.get("h")} z={b.get("z")} text={b.get("text")[:40]!r}', flush=True)
             closed = _try_close_blockers(frame)
             if not closed:
                 closed = _try_close_blockers(page)
             if closed:
-                print('  [WARN] 已尝试关闭阻挡层', flush=True)
                 time.sleep(0.5)
-            else:
-                print('  [WARN] 没找到关闭按钮，请手动关掉', flush=True)
-    except Exception as e:
-        print(f'  [WARN] 预检 modal 异常: {e}', flush=True)
+    except Exception:
+        pass
 
-    # 1) 滚到候选人位置（视口顶部留 100px 余量让按钮完全可见）
-    viewport_h = frame.evaluate("() => window.innerHeight")
-    target_y = max(0, doc_y - 100)
-    scroll_iframe_smooth(frame, target_y)
-    time.sleep(0.3)
-
-    # 2) 重新找 btn：必须 name 精确匹配 + doc_y 在容差内
-    # BOSS list 实际是单列纵向（所有 li_card_item 都在 dx≈174），不靠 dx 锁定
-    # 关键：返回的是 button 元素索引，click 时直接用 locator 索引拿 button click
-    # （不要用 page.mouse.click 算坐标 — list 视觉布局会让坐标落到 li 区域）
-    btn_info = frame.evaluate(r"""(args) => {
-        const name = args.name;
-        const target_dy = args.target_dy;
-        const dy_tol = 220;  // doc_y 容差 ±220px（list 动态变更时允许较大飘移，约 1 个 li 高度）
-        const lis = document.querySelectorAll('li.card-item');
-        let best_li = null;
-        let best_li_idx = -1;
-        let best_dy_diff = Infinity;
-        // 先按 name 完全匹配找最近的 li
-        for (let i = 0; i < lis.length; i++) {
-            const li = lis[i];
-            const nameEl = li.querySelector('[class*="name"]');
-            const li_name = nameEl ? (nameEl.textContent || '').trim() : '';
-            const clean = li_name.replace(/\s*(刚刚活跃|今日活跃|3日内活跃|本周活跃|2周内活跃|本月活跃)\s*$/, '').trim();
-            if (clean !== name) continue;
-            const btn = li.querySelector('button.btn-greet');
-            if (!btn) continue;
-            const btnText = (btn.textContent || '').trim();
-            if (btnText !== '打招呼') continue;
-            const r = li.getBoundingClientRect();
-            const li_dy = r.top + window.scrollY;
-            const dy_diff = Math.abs(li_dy - target_dy);
-            if (dy_diff < best_dy_diff) {
-                best_dy_diff = dy_diff;
-                best_li = li;
-                best_li_idx = i;
-            }
-        }
-        if (!best_li) {
-            return {found: false, reason: `name=${name} 不在 list 上（已招呼 / 被排除）`};
-        }
-        if (best_dy_diff > dy_tol) {
-            return {found: false, reason: `name=${name} 找到但 dy_diff=${Math.round(best_dy_diff)} > ${dy_tol}（list 状态变化大，跳过避免点错人）`};
-        }
-        const btn = best_li.querySelector('button.btn-greet');
-        const r = btn.getBoundingClientRect();
-        const allBtns = document.querySelectorAll('button.btn-greet');
-        let btn_idx = -1;
-        for (let i = 0; i < allBtns.length; i++) {
-            if (allBtns[i] === btn) { btn_idx = i; break; }
-        }
-        return {
-            found: true,
-            x: r.left, y: r.top, w: r.width, h: r.height,
-            li_idx: best_li_idx,
-            btn_idx: btn_idx,
-            btn_text: (btn.textContent || '').trim(),
-            dy_diff: best_dy_diff,
-        };
-    }""", {'name': name, 'target_dy': doc_y})
-
-    if not btn_info.get('found'):
-        return {'name': name, 'found': False, 'status': 'not_found',
-                'reason': btn_info.get('reason', '找不到 li 或 btn')}
-
-    box = {'x': btn_info['x'], 'y': btn_info['y'],
-           'width': btn_info['w'], 'height': btn_info['h']}
-    if box['width'] == 0:
-        return {'name': name, 'found': False, 'status': 'not_found', 'reason': '按钮不在视口'}
-
-    # Debug
-    _dbg_scrollY = frame.evaluate("() => window.scrollY")
-    _cur_box_dbg = iframe.bounding_box() if iframe else iframe_box
-    _dbg_px = _cur_box_dbg['x'] + box['x'] + box['width']/2
-    _dbg_py = _cur_box_dbg['y'] + box['y'] + box['height']/2
-    print(f'  [DBG] {name} scrollY={_dbg_scrollY} target_dy={doc_y} dy_diff={btn_info.get("dy_diff")} btn=({box["x"]:.0f},{box["y"]:.0f}) btn_idx={btn_info.get("btn_idx")} iframe=({_cur_box_dbg["x"]:.0f},{_cur_box_dbg["y"]:.0f}) page=({_dbg_px:.0f},{_dbg_py:.0f})', flush=True)
-
-    if dry_run:
-        return {
-            'name': name, 'found': True, 'doc_x': box['x'], 'doc_y': box['y'],
-            'btn_idx': btn_info.get('btn_idx'),
-            'target_scroll_y': target_y, 'dry_run': True,
-        }
-
-    # 3) 关键修复：用 element handle 直接 click，不再 page.mouse.click 算坐标
-    #    原因：list 视觉布局让 btn 中心 page 坐标可能落在 li card-item 边缘外
-    #    → page.mouse.click 命中 li 的某个父 div → 打开简历详情
-    #    用 frame.locator('li.card-item').nth(li_idx).locator('button.btn-greet')
-    #    让 patchright 走 element 自带 hit-test 流程，绝对点 button 自己
-    li_idx = btn_info.get('li_idx', -1)
+    # 6) 拟人 hover + evaluate click
     btn_idx = btn_info.get('btn_idx', -1)
-    if li_idx < 0 or btn_idx < 0:
-        return {'name': name, 'found': False, 'status': 'not_found', 'reason': 'btn 索引无效'}
+    li_idx = btn_info.get('li_idx', -1)
+    if btn_idx < 0 or li_idx < 0:
+        return {
+            'name': name, 'encrypt_geek_id': encrypt_geek_id,
+            'found': True, 'verified': False, 'status': 'not_found',
+            'match_by': match_by, 'scroll_attempts': scroll_attempts,
+            'cards_scanned': _last_scan_count(),
+            'reason': 'btn/li 索引无效',
+        }
 
-    # 3.1) 拟人 hover（先到 btn 区域，模拟人眼看到再点）
     try:
-        human_move(page, (_dbg_px, _dbg_py))
+        _cur_box = iframe.bounding_box() if iframe else iframe_box
+        _px = _cur_box['x'] + btn_info['x'] + btn_info['w'] / 2
+        _py = _cur_box['y'] + btn_info['y'] + btn_info['h'] / 2
+        human_move(page, (_px, _py))
         time.sleep(random.uniform(0.3, 0.5))
     except Exception:
         pass
 
-    # 3.2) 直接 evaluate click li 内的 button（不走 patchright locator，避免 button 数量大超时）
-    #    evaluate click 走 button DOM 自己的 .click() 事件流，触发 BOSS Vue 的 click handler
-    #    不走 page.mouse.click 算坐标，所以不会命中 li 区域而非 btn
-    btn_text_before = frame.evaluate(r"""(idx) => {
-        const all = document.querySelectorAll('button.btn-greet');
-        if (all[idx]) return (all[idx].textContent || '').trim();
-        return null;
-    }""", btn_idx)
-    print(f'  [CLICK] evaluate click li_idx={li_idx} btn_idx={btn_idx} btn_text_before={btn_text_before!r}', flush=True)
-    clicked = frame.evaluate(r"""(idx) => {
-        const all = document.querySelectorAll('button.btn-greet');
-        if (all[idx] && (all[idx].textContent||'').trim() === '打招呼') {
-            all[idx].click();
-            return true;
-        }
-        return false;
-    }""", btn_idx)
+    btn_text_before = frame.evaluate(
+        "(idx) => { const all = document.querySelectorAll('button.btn-greet'); "
+        "return all[idx] ? (all[idx].textContent||'').trim() : null; }", btn_idx)
+    clicked = frame.evaluate(
+        "(idx) => { const all = document.querySelectorAll('button.btn-greet'); "
+        "if (all[idx] && (all[idx].textContent||'').trim()==='打招呼') { all[idx].click(); return true; } "
+        "return false; }", btn_idx)
     if not clicked:
-        return {'name': name, 'found': False, 'status': 'not_found',
-                'reason': f'btn_idx={btn_idx} 不存在或 text 不是"打招呼"（之前：{btn_text_before!r}）'}
-    time.sleep(4.0)  # 等 BOSS 后端处理 + dialog 弹出 + button 文本更新
+        return {
+            'name': name, 'encrypt_geek_id': encrypt_geek_id,
+            'found': True, 'verified': False, 'status': 'not_found',
+            'match_by': match_by, 'scroll_attempts': scroll_attempts,
+            'cards_scanned': _last_scan_count(),
+            'reason': f'btn_idx={btn_idx} 不存在或 text 不是"打招呼"（之前：{btn_text_before!r}）',
+        }
 
-    # 4) 验证 + 关弹窗（沿用 greet_one 的逻辑）
-    # 关键：招呼成功后 button class 从 "btn btn-greet" 变成 "btn btn-continue btn-outline"
-    # text 从 "打招呼" 变成 "继续沟通" — 用 [class*="btn-continue"] 选择器锁定
+    time.sleep(4.0)
+
+    # 7) 验证
     verified = False
     try:
-        scan_result = frame.evaluate(r"""(args) => {
-            const name = args.name;
-            // 候选选择器：btn-continue（成功招呼后的 class）+ btn-greet（待招呼）
-            const btns = document.querySelectorAll('button[class*="btn-continue"], button.btn-greet');
-            for (const b of btns) {
-                const t = (b.textContent || '').trim();
-                if (!t.includes('继续') && !t.includes('沟通') && t !== '打招呼') continue;
-                if (t === '打招呼') continue;  // 跳过还没招呼的
-                let card = b.closest('li');
-                if (!card) card = b.closest('[class*="card"]');
-                if (!card) continue;
-                const cardText = (card.innerText || '').replace(/\s+/g, '');
-                if (cardText.includes(name)) return {found: true, btn_text: t, btn_class: b.className};
-            }
-            return {found: false};
-        }""", {'name': name.replace(' ', '').strip()})
+        scan_result = frame.evaluate(
+            r"(args) => { const name = args.name; "
+            r"const btns = document.querySelectorAll('button[class*=\"btn-continue\"], button.btn-greet'); "
+            r"for (const b of btns) { const t=(b.textContent||'').trim(); "
+            r"if (!t.includes('继续') && !t.includes('沟通') && t!=='打招呼') continue; "
+            r"if (t === '打招呼') continue; "
+            r"let card = b.closest('li'); if (!card) card = b.closest('[class*=\"card\"]'); "
+            r"if (!card) continue; "
+            r"const ct=(card.innerText||'').replace(/\s+/g,''); "
+            r"if (ct.includes(name)) return {found:true, btn_text:t, btn_class:b.className}; } "
+            r"return {found:false}; }",
+            {'name': name.replace(' ', '').strip()})
         if scan_result and scan_result.get('found'):
             verified = True
     except Exception:
         pass
 
+    # 8) 关 dialog
     dialog_closed = False
     try:
-        # 扫 page + 所有嵌套 frame 找"知道了"按钮
-        # 关键：Boss "已向牛人发送招呼" dialog 跟 BOSS list 在同一个 iframe[0] 里
-        # 用 evaluate 直接调 button.click()（不通过 patchright locator，避免 button>=468 时超时）
-        target_frame = None
         for f in page.frames:
             try:
-                found = f.evaluate(r"""() => {
-                    const btns = document.querySelectorAll('button');
-                    for (let i = 0; i < btns.length; i++) {
-                        const t = (btns[i].textContent || '').trim();
-                        if ((t === '知道了' || t === '我知道了') && btns[i].offsetWidth > 0 && btns[i].offsetHeight > 0) {
-                            btns[i].click();
-                            return t;
-                        }
-                    }
-                    return null;
-                }""")
+                found = f.evaluate(
+                    r"() => { const btns = document.querySelectorAll('button'); "
+                    r"for (let i=0;i<btns.length;i++) { const t=(btns[i].textContent||'').trim(); "
+                    r"if ((t==='知道了'||t==='我知道了') && btns[i].offsetWidth>0 && btns[i].offsetHeight>0) "
+                    r"{ btns[i].click(); return t; } } return null; }")
                 if found:
-                    target_frame = f
                     dialog_closed = True
-                    print(f'  [DIALOG] 已 click "{found}" via evaluate', flush=True)
-                    time.sleep(1.0)
                     break
             except Exception:
                 continue
-    except Exception as e:
-        print(f'  [WARN] 关 dialog 失败: {e}', flush=True)
+    except Exception:
+        pass
 
     return {
         'name': name,
+        'encrypt_geek_id': encrypt_geek_id,
         'found': True,
         'clicked': True,
         'verified': verified,
         'dialog_closed': dialog_closed,
         'status': 'greeted' if verified else 'clicked_unverified',
+        'match_by': match_by,
+        'scroll_attempts': scroll_attempts,
+        'cards_scanned': _last_scan_count(),
     }
 
 
-# ============== 主流程 ==============
+# ============== 实时 DOM 定位辅助 ==============
+
+_LAST_SCAN_COUNT = [0]
+
+
+def _last_scan_count() -> int:
+    return _LAST_SCAN_COUNT[0]
+
+
+_FIND_CARD_JS = r"""(args) => {
+    const gid = (args.gid || '').trim();
+    const name = (args.name || '').trim();
+    const btns = document.querySelectorAll('button.btn-greet');
+    let first_id_match = null;
+    let first_name_match = null;
+    let total = 0;
+    for (const b of btns) {
+        const t = (b.textContent || '').trim();
+        if (t !== '打招呼') continue;
+        total++;
+        const card = b.closest('li.card-item');
+        if (!card) continue;
+
+        // 抽 encrypt_geek_id
+        let card_gid = '';
+        card_gid = card.getAttribute('data-geek-id')
+                 || card.getAttribute('data-encrypt-geek-id')
+                 || card.getAttribute('data-uid')
+                 || '';
+        if (!card_gid) {
+            const tagged = card.querySelector('[data-geek-id], [data-encrypt-geek-id], [data-uid]');
+            if (tagged) card_gid = tagged.getAttribute('data-geek-id')
+                              || tagged.getAttribute('data-encrypt-geek-id')
+                              || tagged.getAttribute('data-uid')
+                              || '';
+        }
+        if (!card_gid) {
+            for (const a of card.querySelectorAll('a[href]')) {
+                const href = a.getAttribute('href') || '';
+                const m = href.match(/[?&](?:geekId|encryptGeekId|securityId|geek_id)=([^&]+)/);
+                if (m) { card_gid = decodeURIComponent(m[1]); break; }
+            }
+        }
+
+        // 抽 name
+        let card_name = '';
+        const nameEl = card.querySelector('[class*="name"]') || card.querySelector('h3, h4');
+        if (nameEl) {
+            card_name = (nameEl.textContent || '').trim()
+                .replace(/\s*(刚刚活跃|今日活跃|3日内活跃|本周活跃|2周内活跃|本月活跃)\s*$/, '')
+                .trim();
+        }
+
+        const rect = b.getBoundingClientRect();
+        const doc_y = Math.round(rect.top + window.scrollY);
+        const doc_x = Math.round(rect.left + window.scrollX);
+
+        if (gid && card_gid === gid) {
+            return {found: true, match_by: 'encrypt_geek_id',
+                    card: {encrypt_geek_id: card_gid, name: card_name,
+                           doc_y: doc_y, doc_x: doc_x, btn_text: t},
+                    total};
+        }
+        if (!first_id_match && card_gid === '') {
+            first_id_match = {encrypt_geek_id: '', name: card_name,
+                              doc_y: doc_y, doc_x: doc_x, btn_text: t};
+        }
+        if (gid === '' && name && card_name === name && !first_name_match) {
+            first_name_match = {encrypt_geek_id: card_gid, name: card_name,
+                                doc_y: doc_y, doc_x: doc_x, btn_text: t};
+        }
+    }
+    if (first_name_match) {
+        return {found: true, match_by: 'name',
+                card: first_name_match, total};
+    }
+    if (first_id_match) {
+        return {found: true, match_by: 'no_gid_in_dom',
+                card: first_id_match, total};
+    }
+    return {found: false, total};
+}"""
+
+
+def _find_card_by_id(frame, encrypt_geek_id: str, name: str) -> tuple[Optional[dict], str]:
+    """实时扫当前 DOM，按 encrypt_geek_id 找候选卡片。
+    返回 (card_dict_or_None, match_by)。
+    match_by: 'encrypt_geek_id' / 'name' / 'no_gid_in_dom' / 'none'
+    """
+    try:
+        res = frame.evaluate(_FIND_CARD_JS,
+                              {'gid': encrypt_geek_id or '',
+                               'name': name or ''}) or {}
+    except Exception:
+        res = {}
+    _LAST_SCAN_COUNT[0] = int(res.get('total', 0))
+    if res.get('found'):
+        return res.get('card'), res.get('match_by', 'unknown')
+    return None, 'none'
+
+
+_FIND_BTN_JS = r"""(args) => {
+    const gid = (args.gid || '').trim();
+    const name = (args.name || '').trim();
+    const target_dy = args.target_dy;
+    const dy_tol = 260;
+    const lis = document.querySelectorAll('li.card-item');
+    let best_li = null;
+    let best_li_idx = -1;
+    let best_dy_diff = Infinity;
+
+    for (let i = 0; i < lis.length; i++) {
+        const li = lis[i];
+        // encrypt_geek_id 锁定（优先）
+        let card_gid = li.getAttribute('data-geek-id')
+                    || li.getAttribute('data-encrypt-geek-id')
+                    || li.getAttribute('data-uid')
+                    || '';
+        if (!card_gid) {
+            const tagged = li.querySelector('[data-geek-id], [data-encrypt-geek-id], [data-uid]');
+            if (tagged) card_gid = tagged.getAttribute('data-geek-id')
+                              || tagged.getAttribute('data-encrypt-geek-id')
+                              || tagged.getAttribute('data-uid')
+                              || '';
+        }
+        if (!card_gid) {
+            for (const a of li.querySelectorAll('a[href]')) {
+                const href = a.getAttribute('href') || '';
+                const m = href.match(/[?&](?:geekId|encryptGeekId|securityId|geek_id)=([^&]+)/);
+                if (m) { card_gid = decodeURIComponent(m[1]); break; }
+            }
+        }
+
+        // name（兜底）
+        let card_name = '';
+        const nameEl = li.querySelector('[class*="name"]') || li.querySelector('h3, h4');
+        if (nameEl) {
+            card_name = (nameEl.textContent || '').trim()
+                .replace(/\s*(刚刚活跃|今日活跃|3日内活跃|本周活跃|2周内活跃|本月活跃)\s*$/, '')
+                .trim();
+        }
+
+        const matched = (gid && card_gid === gid) || (gid === '' && name && card_name === name);
+        if (!matched) continue;
+
+        const btn = li.querySelector('button.btn-greet');
+        if (!btn) continue;
+        const btnText = (btn.textContent || '').trim();
+        if (btnText !== '打招呼') continue;
+
+        const r = li.getBoundingClientRect();
+        const li_dy = r.top + window.scrollY;
+        const dy_diff = Math.abs(li_dy - target_dy);
+        if (dy_diff < best_dy_diff) {
+            best_dy_diff = dy_diff;
+            best_li = li;
+            best_li_idx = i;
+        }
+    }
+    if (!best_li) {
+        return {found: false, reason: 'li.card-item 上无 encrypt_geek_id/name 匹配按钮'};
+    }
+    if (best_dy_diff > dy_tol) {
+        return {found: false, reason: `找到但 dy_diff=${Math.round(best_dy_diff)} > ${dy_tol}（list 已重建，跳过避免点错人）`};
+    }
+    const btn = best_li.querySelector('button.btn-greet');
+    const r = btn.getBoundingClientRect();
+    const allBtns = document.querySelectorAll('button.btn-greet');
+    let btn_idx = -1;
+    for (let i = 0; i < allBtns.length; i++) {
+        if (allBtns[i] === btn) { btn_idx = i; break; }
+    }
+    return {
+        found: true,
+        x: r.left, y: r.top, w: r.width, h: r.height,
+        li_idx: best_li_idx, btn_idx: btn_idx,
+        btn_text: (btn.textContent || '').trim(),
+        dy_diff: best_dy_diff,
+    };
+}"""
+
+
+def _find_btn_by_card_id(frame, encrypt_geek_id: str, name: str, *, target_y: int) -> dict:
+    """在 li.card-item 上找与目标匹配（encrypt_geek_id 优先；fallback name）
+    的招呼按钮。target_y 仅作 dy 容差参考。
+    """
+    try:
+        return frame.evaluate(_FIND_BTN_JS,
+                              {'gid': encrypt_geek_id or '',
+                               'name': name or '',
+                               'target_dy': int(target_y or 0)}) or {'found': False}
+    except Exception as e:
+        return {'found': False, 'reason': f'evaluate 异常: {type(e).__name__}'}
+
+
+# 保留旧接口名（仅签名兼容；外部不应再调用）
+def greet_one_by_position(page, frame, iframe_box, name, pos,
+                          dry_run=False, iframe=None):
+    """兼容旧调用：内部转发到 greet_one_by_id（encrypt_geek_id 从 pos 取）。"""
+    encrypt_geek_id = (pos or {}).get('encrypt_geek_id', '')
+    return greet_one_by_id(page, frame, iframe_box, name, encrypt_geek_id,
+                           pos or {}, dry_run=dry_run, iframe=iframe)
+
+
+def _calc_summary(greet_log: list) -> dict:
+    """算 summary + 顶层 status。
+    status 语义：
+      - 'no_candidates':   greeted=0 且 not_found=0 且 total=0
+      - 'complete':        greeted=total>0 且 not_found=0
+      - 'partial_success': greeted>=1 且 not_found>=1
+      - 'all_not_found':   greeted=0 且 not_found>0
+    """
+    greeted = sum(1 for r in greet_log if r.get('status') == 'greeted')
+    unverified = sum(1 for r in greet_log if r.get('status') == 'clicked_unverified')
+    not_found = sum(1 for r in greet_log if r.get('status') == 'not_found')
+    dry_run = sum(1 for r in greet_log if r.get('status') == 'dry_run')
+    scanned = sum(1 for r in greet_log if r.get('status') == 'scanned')
+    total = len(greet_log)
+    if total == 0:
+        top = 'no_candidates'
+    elif greeted == 0 and not_found > 0:
+        top = 'all_not_found'
+    elif not_found > 0 and greeted >= 1:
+        top = 'partial_success'
+    elif greeted > 0:
+        top = 'complete'
+    else:
+        top = 'no_candidates'
+    return {
+        'status': top,
+        'greeted': greeted,
+        'clicked_unverified': unverified,
+        'not_found': not_found,
+        'dry_run': dry_run,
+        'scanned': scanned,
+        'total': total,
+    }
+
+
+def _refresh_page_once(page) -> bool:
+    """只刷新一次（BOSS 推荐页）。返回是否成功。"""
+    try:
+        page.goto('https://www.zhipin.com/web/chat/recommend',
+                  wait_until='domcontentloaded', timeout=30000)
+        time.sleep(5)
+        return True
+    except Exception:
+        return False
+
 
 def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
                run_id=None, only_names=None, dry_run=False, scroll_max=60,
@@ -718,39 +1147,68 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
                     'reason': '' if pos else '未在当前 list 出现',
                 })
         else:
-            # ★ Step 2: 按 doc_y 倒序招呼（避免 BOSS 动态换卡影响已招呼位置）
-            high_with_pos = []
-            for h in high:
-                pos = positions.get(h['name'])
-                if pos:
-                    high_with_pos.append((h, pos))
-            high_with_pos.sort(key=lambda x: -x[1]['doc_y'])  # doc_y 倒序
+            # ★ Step 2 (v1.1.3): 按 encrypt_geek_id + 实时 DOM 扫描逐位招呼
+            #   - 不再依赖一次性扫描结果（虚拟列表懒加载易遗漏）
+            #   - 每位独立实时扫描 + 渐进滚动重试 + 必要时刷新一次
+            #   - 找不到的也走完整流程后才记 not_found
+            log(output, f'目标 {len(high)} 人开始招呼（按 encrypt_geek_id 实时定位）')
 
-            log(output, f'实际可招呼 {len(high_with_pos)} 人（list 中存在的）')
-            for i, (h, pos) in enumerate(high_with_pos, 1):
-                log(output, f'  [倒序 #{i}] {h["name"]} doc_y={pos["doc_y"]}')
-
-            # 招呼每个候选人
-            for i, (h, pos) in enumerate(high_with_pos, 1):
+            refreshed_once = False
+            for i, h in enumerate(high, 1):
                 name = h['name']
-                log(output, f'\n--- 招呼 [{i}/{len(high_with_pos)}]: {name} doc_y={pos["doc_y"]} ---')
-                result = greet_one_by_position(page, frame, iframe_box, name, pos, dry_run=dry_run)
+                encrypt_geek_id = h.get('encrypt_geek_id', '') or ''
+                log(output, f'\n--- 招呼 [{i}/{len(high)}]: {name} gid={encrypt_geek_id[:14]}... ---')
+
+                # ★ 实时扫描 + 重试（含必要的滚动）
+                result = greet_one_by_id(
+                    page, frame, iframe_box, name, encrypt_geek_id,
+                    pos={},
+                    dry_run=dry_run,
+                    iframe=iframe,
+                )
+
+                # 若 not_found 且尚未刷新过 → 刷新页面一次 + 重扫
+                if (result.get('status') == 'not_found'
+                        and not refreshed_once
+                        and not dry_run
+                        and not scan_only):
+                    log(output, '    [REFRESH] 完整扫描未找到，刷新页面一次再试')
+                    if _refresh_page_once(page):
+                        # 重新定位 iframe
+                        try:
+                            iframe = page.wait_for_selector('iframe', timeout=15000)
+                            frame = iframe.content_frame()
+                            iframe_box = iframe.bounding_box()
+                        except Exception:
+                            pass
+                        refreshed_once = True
+                        result = greet_one_by_id(
+                            page, frame, iframe_box, name, encrypt_geek_id,
+                            pos={},
+                            dry_run=dry_run,
+                            iframe=iframe,
+                        )
+
                 result.update(h)  # 合并 score/tier/school
                 greet_log.append(result)
 
                 if dry_run:
                     log(output, f'    [DRY-RUN] 找到 target_scroll_y={result.get("target_scroll_y", 0):.0f}')
-                elif result.get('verified'):
+                elif result.get('status') == 'greeted':
                     log(output, f'    ✓ {name} 已打招呼（按钮变"继续沟通"）')
-                else:
+                elif result.get('status') == 'clicked_unverified':
                     log(output, f'    ⚠ {name} 点击了但验证失败')
+                else:
+                    log(output, f'    ✗ {name} 未找到 ({result.get("reason","")[:60]})')
 
-                # 节流 3-6 秒
-                wait = random.uniform(3, 6)
-                log(output, f'    ⏸ 节流 {wait:.1f}s')
-                time.sleep(wait)
+                # 节流 3-6 秒（仅在成功招呼后；not_found 不浪费 BOSS 节奏预算）
+                if result.get('status') in ('greeted', 'clicked_unverified'):
+                    wait = random.uniform(3, 6)
+                    log(output, f'    ⏸ 节流 {wait:.1f}s')
+                    time.sleep(wait)
 
-                # 实时落盘
+                # 实时落盘（含顶层 status）
+                _summary_now = _calc_summary(greet_log)
                 with open(output.get_process_path('greet_log.json'), 'w', encoding='utf-8') as f:
                     json.dump({
                         'job': job_name,
@@ -760,29 +1218,15 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
                         'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         'mode': 'scan_and_greet_reverse',
                         'positions_count': len(positions),
+                        'status': _summary_now['status'],
+                        'summary': _summary_now,
                         'results': greet_log,
                     }, f, ensure_ascii=False, indent=2)
 
-            # 没找到的
-            found_names = {h['name'] for h, _ in high_with_pos}
-            for h in high:
-                if h['name'] not in found_names:
-                    greet_log.append({
-                        **h, 'found': False, 'verified': False,
-                        'status': 'not_found',
-                        'reason': '扫描全程未在 list 出现（可能已招呼 / 被 BOSS 排除）',
-                    })
-
-    # 最终落盘
-    summary = {
-        'greeted': sum(1 for r in greet_log if r.get('status') == 'greeted'),
-        'clicked_unverified': sum(1 for r in greet_log if r.get('status') == 'clicked_unverified'),
-        'not_found': sum(1 for r in greet_log if r.get('status') == 'not_found'),
-        'dry_run': sum(1 for r in greet_log if r.get('status') == 'dry_run'),
-        'scanned': sum(1 for r in greet_log if r.get('status') == 'scanned'),
-        'total': len(greet_log),
-    }
-    log(output, f'\n=== 完成：greeted={summary["greeted"]} unverified={summary["clicked_unverified"]} not_found={summary["not_found"]} ===')
+    # 最终落盘（含顶层 status）
+    summary = _calc_summary(greet_log)
+    log(output, f'\n=== 完成：status={summary["status"]} greeted={summary["greeted"]} '
+                f'unverified={summary["clicked_unverified"]} not_found={summary["not_found"]} ===')
 
     with open(output.get_process_path('greet_log.json'), 'w', encoding='utf-8') as f:
         json.dump({
@@ -793,6 +1237,7 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
             'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'mode': 'scan_and_greet_reverse',
             'positions_count': len(positions),
+            'status': summary['status'],
             'summary': summary,
             'results': greet_log,
         }, f, ensure_ascii=False, indent=2)
@@ -821,26 +1266,41 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
         log(output, f'    python -X utf8 -c "import sys;sys.path.insert(0,\'shared\');from run_orchestrator import RunOrchestrator;RunOrchestrator(\'{job_name}\').finish()"')
         log(output, '━' * 60)
     elif greeted_count > 0 and not args.dry_run:
-        # 真招呼且至少招呼成功 1 人 → 自动 finish()
-        # 修复（2026-08-04）：用 maybe_finish() 统一决策 + 显式传 run_id；
-        # 失败不静默（异常向上抛，智能体能立即看到 run 未 finished）。
-        try:
-            auto_finished = maybe_finish(
-                orch, run_id,
-                greeted_count=greeted_count,
-                dry_run=args.dry_run,
-                no_finish=args.no_finish,
-            )
-        except TypeError as e:
-            # 兼容防御：未来 finish 签名若再变，TypeError 也要可见
-            log(output, f'⚠️  finish() 签名错误: {e}')
-            raise
-        if auto_finished:
+        # 真招呼且至少招呼成功 1 人。
+        # v1.1.3 fix: partial_success（greeted>=1 且 not_found>=1）时**不**
+        # 自动 finish() — 让 run 保留待用户决定补招或接受部分完成。
+        # complete（not_found=0）才走原 finish 路径。
+        if summary.get('not_found', 0) > 0:
             log(output, '')
             log(output, '━' * 60)
-            log(output, f'✅ A 流程 5 步全部完成，已自动 finish() run_id={run_id}。')
-            log(output, f'招呼成功 {greeted_count} 人，下次跑会自动开新 run。')
+            log(output, f'⚠️  partial_success：招呼 {greeted_count} 人成功，'
+                        f'但 {summary.get("not_found")} 人未找到。')
+            log(output, f'    run_id={run_id} 不自动 finish() — 保留待你决定。')
+            log(output, '    选项：')
+            log(output, '      1) 重跑 greet（同 eid/run_id，--only-names 补名单）')
+            log(output, '      2) 显式 finish（接受部分完成）：')
+            log(output, f'         python -c "import sys;sys.path.insert(0,\'shared\');'
+                        f'from run_orchestrator import RunOrchestrator;'
+                        f'RunOrchestrator(\'{job_name}\').finish()"')
             log(output, '━' * 60)
+        else:
+            # complete：原逻辑，自动 finish()
+            try:
+                auto_finished = maybe_finish(
+                    orch, run_id,
+                    greeted_count=greeted_count,
+                    dry_run=args.dry_run,
+                    no_finish=args.no_finish,
+                )
+            except TypeError as e:
+                log(output, f'⚠️  finish() 签名错误: {e}')
+                raise
+            if auto_finished:
+                log(output, '')
+                log(output, '━' * 60)
+                log(output, f'✅ A 流程 5 步全部完成，已自动 finish() run_id={run_id}。')
+                log(output, f'招呼成功 {greeted_count} 人，下次跑会自动开新 run。')
+                log(output, '━' * 60)
     elif args.dry_run:
         log(output, '')
         log(output, '━' * 60)

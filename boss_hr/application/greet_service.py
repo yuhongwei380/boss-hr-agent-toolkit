@@ -186,8 +186,9 @@ def greet_candidates(*, job_name: str, encrypt_job_id: Optional[str],
     if greet_log is None:
         # 无高分候选人（旧脚本提前 return，未写日志；run 目录可能已被
         # prune_if_empty 删除）。见 greet-baseline.md §6.3。
+        # v1.1.3: status 语义化 → no_candidates；next_action=done。
         return ok(
-            status="greet_complete",
+            status="no_candidates",
             run_id=run_id, encrypt_job_id=eid, job_name=job_name,
             data={
                 "greeted": 0,
@@ -204,20 +205,48 @@ def greet_candidates(*, job_name: str, encrypt_job_id: Optional[str],
 
     summary = greet_log.get("summary") or {}
     results = greet_log.get("results") or []
+    greeted = int(summary.get("greeted", 0))
+    not_found = int(summary.get("not_found", 0))
+    # 顶层 status 决定 CLI 状态语义：
+    #   - complete        → greet_complete
+    #   - partial_success → partial_success（next_action=review_warnings）
+    #   - all_not_found   → greet_complete 但 data.partial_success_warnings=True
+    #   - no_candidates   → no_candidates
+    top_status = (greet_log.get("status")
+                  or summary.get("status")
+                  or ("complete" if greeted > 0 and not_found == 0
+                      else "partial_success" if greeted > 0 and not_found > 0
+                      else "no_candidates"))
+    if top_status == "partial_success":
+        cli_status = "partial_success"
+        next_action = "review_warnings"
+    elif top_status == "complete":
+        cli_status = "greet_complete"
+        next_action = "done"
+    elif top_status == "all_not_found":
+        cli_status = "greet_complete"
+        next_action = "review_warnings"
+    else:
+        cli_status = "no_candidates"
+        next_action = "done"
     return ok(
-        status="greet_complete",
+        status=cli_status,
         run_id=run_id, encrypt_job_id=eid, job_name=job_name,
         data={
-            "greeted": int(summary.get("greeted", 0)),
+            "greeted": greeted,
             "clicked_unverified": int(summary.get("clicked_unverified", 0)),
-            "not_found": int(summary.get("not_found", 0)),
+            "not_found": not_found,
             "total": int(summary.get("total", len(results))),
             "candidates_targeted": len(results),
             "dry_run": dry_run,
             "greet_log_file": os.path.abspath(log_path),
-            "no_candidates": False,
+            "no_candidates": (cli_status == "no_candidates"),
+            "partial_success_warnings": (top_status in ("partial_success", "all_not_found")),
+            "greet_log_status": top_status,
+            "not_found_names": [r.get("name") for r in results
+                                 if r.get("status") == "not_found"],
         },
-        next_action="done",
+        next_action=next_action,
     )
 
 
