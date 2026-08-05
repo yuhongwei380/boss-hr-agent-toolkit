@@ -1002,13 +1002,23 @@ def greet_one_by_position(page, frame, iframe_box, name, pos,
                            pos or {}, dry_run=dry_run, iframe=iframe)
 
 
-def _calc_summary(greet_log: list) -> dict:
+def _calc_summary(greet_log: list, *, dry_run: bool = False) -> dict:
     """算 summary + 顶层 status。
-    status 语义：
+
+    非 dry-run 路径状态语义：
       - 'no_candidates':   greeted=0 且 not_found=0 且 total=0
       - 'complete':        greeted=total>0 且 not_found=0
       - 'partial_success': greeted>=1 且 not_found>=1
       - 'all_not_found':   greeted=0 且 not_found>0
+
+    dry-run 路径状态语义（v1.1.3 final）：
+      - 'no_candidates':   目标列表为空
+      - 'dry_run_complete': 有目标，全部只读定位完成（无论 found/not_found_after_full_scan）
+      - 'dry_run_review':   有目标，部分或全部 not_found_after_full_scan
+                            （dry-run 不 click，所以必有 not_found>=1；
+                            只要 not_found>0 就标 review 让用户回头人工核对）
+
+    dry-run 路径下 greeted/clicked_unverified 必为 0（不 click）。
 
     not_found 计数同时兼容旧 'not_found' 与新 'not_found_after_full_scan'。
     """
@@ -1016,9 +1026,28 @@ def _calc_summary(greet_log: list) -> dict:
     unverified = sum(1 for r in greet_log if r.get('status') == 'clicked_unverified')
     not_found = sum(1 for r in greet_log
                     if r.get('status') in ('not_found', 'not_found_after_full_scan'))
-    dry_run = sum(1 for r in greet_log if r.get('status') == 'dry_run')
+    dry_run_count = sum(1 for r in greet_log if r.get('status') == 'dry_run')
     scanned = sum(1 for r in greet_log if r.get('status') == 'scanned')
     total = len(greet_log)
+
+    if dry_run:
+        # dry-run：只读，不写 greeted
+        if total == 0:
+            top = 'no_candidates'
+        elif not_found > 0:
+            top = 'dry_run_review'
+        else:
+            top = 'dry_run_complete'
+        return {
+            'status': top,
+            'greeted': 0,
+            'clicked_unverified': 0,
+            'not_found': not_found,
+            'dry_run': dry_run_count,
+            'scanned': scanned,
+            'total': total,
+        }
+
     if total == 0:
         top = 'no_candidates'
     elif greeted == 0 and not_found > 0:
@@ -1034,21 +1063,10 @@ def _calc_summary(greet_log: list) -> dict:
         'greeted': greeted,
         'clicked_unverified': unverified,
         'not_found': not_found,
-        'dry_run': dry_run,
+        'dry_run': dry_run_count,
         'scanned': scanned,
         'total': total,
     }
-
-
-def _refresh_page_once(page) -> bool:
-    """只刷新一次（BOSS 推荐页）。返回是否成功。"""
-    try:
-        page.goto('https://www.zhipin.com/web/chat/recommend',
-                  wait_until='domcontentloaded', timeout=30000)
-        time.sleep(5)
-        return True
-    except Exception:
-        return False
 
 
 def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
@@ -1231,8 +1249,8 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
                     log(output, f'    ⏸ 节流 {wait:.1f}s')
                     time.sleep(wait)
 
-                # 实时落盘（含顶层 status）
-                _summary_now = _calc_summary(greet_log)
+                # 实时落盘（含顶层 status；dry_run 路径用 dry_run=True 区分语义）
+                _summary_now = _calc_summary(greet_log, dry_run=dry_run)
                 with open(output.get_process_path('greet_log.json'), 'w', encoding='utf-8') as f:
                     json.dump({
                         'job': job_name,
@@ -1242,13 +1260,14 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
                         'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         'mode': 'scan_and_greet_reverse',
                         'positions_count': len(positions),
+                        'dry_run': dry_run,
                         'status': _summary_now['status'],
                         'summary': _summary_now,
                         'results': greet_log,
                     }, f, ensure_ascii=False, indent=2)
 
     # 最终落盘（含顶层 status）
-    summary = _calc_summary(greet_log)
+    summary = _calc_summary(greet_log, dry_run=dry_run)
     log(output, f'\n=== 完成：status={summary["status"]} greeted={summary["greeted"]} '
                 f'unverified={summary["clicked_unverified"]} not_found={summary["not_found"]} ===')
 
@@ -1328,9 +1347,16 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
                 log(output, f'招呼成功 {greeted_count} 人，下次跑会自动开新 run。')
                 log(output, '━' * 60)
     elif args.dry_run:
+        # dry-run 完成分支（v1.1.3 final）：永远不 mark_done / 不 finish / 不写 greeted
         log(output, '')
         log(output, '━' * 60)
-        log(output, '⏸  DRY-RUN 模式未发送招呼，未 finish()（保留回头招呼能力）。')
+        log(output, f'⏸  DRY-RUN 完成：status={summary["status"]}，不发送任何招呼。')
+        if summary.get('status') == 'dry_run_complete':
+            log(output, '    所有目标候选人都在 DOM 中定位到（按 encrypt_geek_id）。')
+        elif summary.get('status') == 'dry_run_review':
+            log(output, f'    {summary.get("not_found")} 位候选人完整扫描后仍未找到；'
+                        '需检查 BOSS 当前推荐列表是否包含目标。')
+        log(output, '    run.json 未修改、run 未 finish。')
         log(output, '━' * 60)
     else:
         log(output, '')

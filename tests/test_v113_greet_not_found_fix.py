@@ -747,12 +747,156 @@ def test_calc_summary_recognizes_not_found_after_full_scan(auto_greet):
 
 
 def test_calc_summary_dry_run_only(auto_greet):
-    """纯 dry_run 结果（greeted=0 not_found=0）→ no_candidates 路径。
-    实际语义更像 all_not_found；这里按当前 fallback 链。"""
+    """纯 dry_run 结果（greeted=0 not_found=0）→ dry_run_complete。"""
     s = auto_greet._calc_summary([
         {"status": "dry_run"},
         {"status": "dry_run"},
-    ])
-    # dry_run 不计入 greeted / not_found → total=2 但 both 0 → no_candidates
-    assert s["status"] == "no_candidates"
+    ], dry_run=True)
+    assert s["status"] == "dry_run_complete"
     assert s["dry_run"] == 2
+    assert s["greeted"] == 0
+    assert s["not_found"] == 0
+    # dry-run 永远不写 greeted
+    assert s["greeted"] == 0
+
+
+def test_calc_summary_dry_run_review_when_not_found(auto_greet):
+    """dry_run + 部分 not_found_after_full_scan → dry_run_review。"""
+    s = auto_greet._calc_summary([
+        {"status": "dry_run"},
+        {"status": "dry_run"},
+        {"status": "not_found_after_full_scan"},
+    ], dry_run=True)
+    assert s["status"] == "dry_run_review"
+    assert s["not_found"] == 1
+    assert s["dry_run"] == 2
+    assert s["greeted"] == 0
+
+
+def test_calc_summary_dry_run_no_candidates(auto_greet):
+    """dry_run + 目标列表为空 → no_candidates。"""
+    s = auto_greet._calc_summary([], dry_run=True)
+    assert s["status"] == "no_candidates"
+    assert s["total"] == 0
+
+
+def test_calc_summary_non_dry_run_unchanged(auto_greet):
+    """非 dry-run 路径保持原语义：complete / partial_success / all_not_found。"""
+    a = auto_greet._calc_summary([
+        {"status": "greeted"}, {"status": "greeted"},
+    ])
+    assert a["status"] == "complete"
+    b = auto_greet._calc_summary([
+        {"status": "greeted"}, {"status": "not_found_after_full_scan"},
+    ])
+    assert b["status"] == "partial_success"
+    c = auto_greet._calc_summary([
+        {"status": "not_found_after_full_scan"},
+        {"status": "not_found_after_full_scan"},
+    ])
+    assert c["status"] == "all_not_found"
+    d = auto_greet._calc_summary([])
+    assert d["status"] == "no_candidates"
+
+
+# ============================================================
+# 13. greet_service CLI 状态映射（dry_run_complete / dry_run_review）
+# ============================================================
+
+def _make_run_json(tmp_path, eid, rid, jn):
+    run_dir = tmp_path / eid / "runs" / rid
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "process").mkdir(exist_ok=True)
+    (run_dir / "run.json").write_text(json.dumps({
+        "run_id": rid, "encrypt_job_id": eid, "confirmed": True,
+        "finished": False, "steps_done": ["jd", "download", "score", "report"],
+    }), encoding="utf-8")
+    return run_dir
+
+
+def _write_dry_run_log(run_dir, *, greeted, not_found, dry_run_status):
+    results = []
+    for i in range(greeted):
+        results.append({"name": f"OK{i}", "status": "dry_run"})
+    for i in range(not_found):
+        results.append({"name": f"NF{i}",
+                        "status": "not_found_after_full_scan",
+                        "reason": "完整扫描后仍未找到"})
+    payload = {
+        "job": "j_dryrun", "run_id": "2026-08-04_120000",
+        "score_threshold": 70, "mode": "scan_and_greet_reverse",
+        "dry_run": True, "status": dry_run_status,
+        "summary": {
+            "status": dry_run_status,
+            "greeted": 0, "clicked_unverified": 0,
+            "not_found": not_found, "dry_run": greeted,
+            "scanned": 0, "total": greeted + not_found,
+        },
+        "results": results,
+    }
+    (run_dir / "process" / "greet_log.json").write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def test_greet_service_dry_run_complete_cli_status(tmp_path, monkeypatch):
+    """dry_run_complete → cli_status=dry_run_complete / next_action=done /
+    greeted=0 / partial_success_warnings=False。"""
+    from boss_hr.application.greet_service import greet_candidates
+    monkeypatch.setenv("BOSS_HR_OUTPUT_DIR", str(tmp_path))
+    eid, rid = "test_drc_eid", "2026-08-04_120000"
+    run_dir = _make_run_json(tmp_path, eid, rid, "j_drc")
+    _write_dry_run_log(run_dir, greeted=2, not_found=0,
+                       dry_run_status="dry_run_complete")
+
+    res = greet_candidates(
+        job_name="j_drc", encrypt_job_id=eid, run_id=rid,
+        dry_run=True,
+    )
+    d = res.to_dict("greet")
+    assert d["status"] == "dry_run_complete"
+    assert d["next_action"] == "done"
+    assert d["data"]["dry_run"] is True
+    assert d["data"]["greeted"] == 0
+    assert d["data"]["partial_success_warnings"] is False
+
+
+def test_greet_service_dry_run_review_cli_status(tmp_path, monkeypatch):
+    """dry_run_review → cli_status=dry_run_review / next_action=review_warnings /
+    partial_success_warnings=True。"""
+    from boss_hr.application.greet_service import greet_candidates
+    monkeypatch.setenv("BOSS_HR_OUTPUT_DIR", str(tmp_path))
+    eid, rid = "test_drr_eid", "2026-08-04_120000"
+    run_dir = _make_run_json(tmp_path, eid, rid, "j_drr")
+    _write_dry_run_log(run_dir, greeted=1, not_found=1,
+                       dry_run_status="dry_run_review")
+
+    res = greet_candidates(
+        job_name="j_drr", encrypt_job_id=eid, run_id=rid,
+        dry_run=True,
+    )
+    d = res.to_dict("greet")
+    assert d["status"] == "dry_run_review"
+    assert d["next_action"] == "review_warnings"
+    assert d["data"]["dry_run"] is True
+    assert d["data"]["greeted"] == 0
+    assert d["data"]["partial_success_warnings"] is True
+    assert d["data"]["not_found"] == 1
+
+
+def test_greet_service_dry_run_no_candidates_cli_status(tmp_path, monkeypatch):
+    """dry_run + 目标列表为空 → cli_status=no_candidates / next_action=done。"""
+    from boss_hr.application.greet_service import greet_candidates
+    monkeypatch.setenv("BOSS_HR_OUTPUT_DIR", str(tmp_path))
+    eid, rid = "test_drn_eid", "2026-08-04_120000"
+    run_dir = _make_run_json(tmp_path, eid, rid, "j_drn")
+    # 不写 greet_log.json（dry_run 跑完发现 0 高分候选人）
+
+    res = greet_candidates(
+        job_name="j_drn", encrypt_job_id=eid, run_id=rid,
+        dry_run=True,
+    )
+    d = res.to_dict("greet")
+    assert d["status"] == "no_candidates"
+    assert d["next_action"] == "done"
+    assert d["data"]["dry_run"] is True
+    assert d["data"]["no_candidates"] is True

@@ -208,10 +208,17 @@ def greet_candidates(*, job_name: str, encrypt_job_id: Optional[str],
     greeted = int(summary.get("greeted", 0))
     not_found = int(summary.get("not_found", 0))
     # 顶层 status 决定 CLI 状态语义：
-    #   - complete        → greet_complete
-    #   - partial_success → partial_success（next_action=review_warnings）
-    #   - all_not_found   → greet_complete 但 data.partial_success_warnings=True
-    #   - no_candidates   → no_candidates
+    #
+    #   非 dry-run 路径：
+    #     - complete        → greet_complete
+    #     - partial_success → partial_success（next_action=review_warnings）
+    #     - all_not_found   → greet_complete 但 data.partial_success_warnings=True
+    #     - no_candidates   → no_candidates
+    #
+    #   dry-run 路径（v1.1.3 final）：
+    #     - no_candidates     → no_candidates（目标列表为空）
+    #     - dry_run_complete  → dry_run_complete（全部定位到；不 click）
+    #     - dry_run_review    → dry_run_review（部分/全部 not_found；需人工核对）
     top_status = (greet_log.get("status")
                   or summary.get("status")
                   or ("complete" if greeted > 0 and not_found == 0
@@ -225,6 +232,12 @@ def greet_candidates(*, job_name: str, encrypt_job_id: Optional[str],
         next_action = "done"
     elif top_status == "all_not_found":
         cli_status = "greet_complete"
+        next_action = "review_warnings"
+    elif top_status == "dry_run_complete":
+        cli_status = "dry_run_complete"
+        next_action = "done"
+    elif top_status == "dry_run_review":
+        cli_status = "dry_run_review"
         next_action = "review_warnings"
     else:
         cli_status = "no_candidates"
@@ -241,10 +254,10 @@ def greet_candidates(*, job_name: str, encrypt_job_id: Optional[str],
             "dry_run": dry_run,
             "greet_log_file": os.path.abspath(log_path),
             "no_candidates": (cli_status == "no_candidates"),
-            "partial_success_warnings": (top_status in ("partial_success", "all_not_found")),
+            "partial_success_warnings": (top_status in ("partial_success", "all_not_found", "dry_run_review")),
             "greet_log_status": top_status,
             "not_found_names": [r.get("name") for r in results
-                                 if r.get("status") == "not_found"],
+                                 if r.get("status") in ("not_found", "not_found_after_full_scan")],
         },
         next_action=next_action,
     )
