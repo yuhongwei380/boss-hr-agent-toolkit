@@ -275,20 +275,60 @@ def _poll_login_status(*, wait_seconds: int) -> tuple[bool, dict]:
 # ============================================================
 
 def ensure_browser_ready(*, auto_launch: bool = True,
-                         login_wait_seconds: int = 20
+                         login_wait_seconds: int = 20,
+                         wait_for_user_login: bool = False
                          ) -> BrowserReadyResult:
     """start / fetch / greet 共用：保证浏览器 + BOSS 登录态可用。
 
     Args:
         auto_launch: True → 9222 未开时自动启动专用 Edge
                      False → 缺 CDP 时直接返回 CDP_NOT_RUNNING
-        login_wait_seconds: 启动 Edge 后等待用户登录的秒数
+        login_wait_seconds: 启动 Edge 后阻塞轮询用户登录的秒数；
+                            **仅在 wait_for_user_login=True 时生效**
+        wait_for_user_login: True  → 阻塞轮询（fetch / greet 默认）
+                            False → 启动 Edge + 打开登录页后立即返回
+                                     waiting_user_login 状态（start 默认）
 
     Returns:
         BrowserReadyResult
           ok=True  → 浏览器就绪 + 登录态有效
           ok=False → 携带 error_obj + remediation + next_action
+                     （BOSS_LOGIN_REQUIRED 配合 info.waiting_user_login=True
+                     是「等用户扫码」门，start 把 ok=False 翻成 status=waiting_user_login）
+
+    v1.1.3 fix: start 不再在 CLI 内阻塞等待用户扫码。
+    默认只启动浏览器 + 打开登录页 + 立即返回 waiting_user_login，
+    由 Agent / 用户重复 start 命令触发登录态复核。
+
+    测试钩子（仅离线测试使用）：
+      环境变量 BOSS_HR_TEST_PREFLIGHT_WAITING=1 时，跳过真实 CDP 检测，
+      直接返回 waiting_user_login 状态（仅供 tests/ 单测，不连真实浏览器）。
     """
+    # ---- 测试钩子：跳过真实 CDP / Edge 检测 ----
+    if os.environ.get("BOSS_HR_TEST_PREFLIGHT_WAITING") == "1":
+        return BrowserReadyResult(
+            ok=False,
+            error_obj=UnifiedError(
+                code=ErrorCode.BOSS_LOGIN_REQUIRED,
+                message="Edge 已就绪但 BOSS 招聘者尚未登录。",
+                recoverable=True,
+            ),
+            next_action="login_then_repeat_command",
+            remediation={
+                "command": "boss-hr start <同样的 query>",
+                "instructions": [
+                    "扫码登录 BOSS 招聘者后台",
+                    "重新运行原命令",
+                ],
+            },
+            info={
+                "browser_auto_launched": True,
+                "login_page_opened": True,
+                "login_page_open_error": "",
+                "waiting_user_login": True,
+                "login_wait_seconds": 0,
+            },
+        )
     # 1. Python 版本（快速 fail）
     py_ok, py_ver = check_python_version()
     if not py_ok:
@@ -421,9 +461,45 @@ def ensure_browser_ready(*, auto_launch: bool = True,
             },
         )
 
-    # 7. 未登录：自动打开登录页 + 轮询等待
+    # 7. 未登录：自动打开登录页
     if auto_launched or check_cdp_port_listening():
         login_page_opened, login_page_open_error = _open_login_page()
+        # v1.1.3: start 默认 wait_for_user_login=False → 不阻塞轮询扫码。
+        # fetch / greet 仍保留 wait_for_user_login=True 的旧轮询路径。
+        if not wait_for_user_login:
+            return BrowserReadyResult(
+                ok=False,
+                error_obj=UnifiedError(
+                    code=ErrorCode.BOSS_LOGIN_REQUIRED,
+                    message=(
+                        "Edge 已就绪但 BOSS 招聘者尚未登录。"
+                        if login_page_opened
+                        else "Edge 已启动，但 BOSS 招聘者尚未登录。"
+                    ),
+                    recoverable=True,
+                ),
+                next_action="login_then_repeat_command",
+                remediation=(
+                    {
+                        "command": "boss-hr start <同样的 query>",
+                        "instructions": [
+                            f"Edge 已自动打开 BOSS 登录页（{EDGE_BROWSER_LOGIN_URL}）"
+                            if login_page_opened else
+                            f"请在专用 Edge 窗口中手动打开 {EDGE_BROWSER_LOGIN_URL}",
+                            "在专用 Edge 内扫码登录 BOSS 招聘者后台",
+                            "登录完成后重新运行原命令",
+                        ],
+                    }
+                ),
+                info={
+                    "browser_auto_launched": auto_launched,
+                    "login_page_opened": login_page_opened,
+                    "login_page_open_error": login_page_open_error,
+                    "waiting_user_login": True,
+                    "login_wait_seconds": 0,
+                },
+            )
+        # 兼容路径：fetch / greet 仍允许在 CLI 内阻塞轮询登录。
         logged_in, last_info = _poll_login_status(
             wait_seconds=login_wait_seconds,
         )
@@ -476,6 +552,7 @@ def ensure_browser_ready(*, auto_launch: bool = True,
                 "login_page_opened": login_page_opened,
                 "login_page_open_error": login_page_open_error,
                 "login_wait_seconds": login_wait_seconds,
+                "waiting_user_login": True,
             },
         )
 
@@ -495,6 +572,7 @@ def ensure_browser_ready(*, auto_launch: bool = True,
                 "重新运行原命令",
             ],
         },
+        info={"waiting_user_login": True},
     )
 
 

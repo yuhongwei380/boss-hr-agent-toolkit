@@ -164,16 +164,19 @@ def start_new_run(*, query: Optional[str], job_name: Optional[str],
                   skip_preflight: bool = False,
                   skip_resolve: bool = False,
                   auto_launch_browser: bool = True,
-                  login_wait_seconds: int = 20) -> CommandResult:
-    """start 命令业务实现（v1.1.2 自动启动 Edge）。
+                  login_wait_seconds: int = 0) -> CommandResult:
+    """start 命令业务实现（v1.1.3 不阻塞扫码等待）。
 
     流程：
       1) query 必填
-      2) ensure_browser_ready（start 必须连 BOSS 后端拉岗位列表）
+      2) ensure_browser_ready（start 默认不等用户扫码）
          auto_launch_browser=True（默认）：缺 CDP → 自动启动专用 Edge
-         未登录 → 自动打开登录页 + 短轮询 → 登录后继续；
-         超时未登录 → waiting_user_login（不创建 run）
-         auto_launch_browser=False（--no-auto-launch）：缺 CDP → CDP_NOT_RUNNING
+         启动成功 + 已登录 → 继续
+         启动成功 + 未登录 → 打开登录页 + waiting_user_login（不创建 run）
+         缺 CDP 且 auto_launch=False → CDP_NOT_RUNNING（真环境错误）
+         BOSS_LOGIN_REQUIRED 但已登录成功 → 继续
+         login_wait_seconds > 0（旧兼容路径）：CLI 内阻塞 N 秒轮询；
+         超时再走 waiting_user_login。
       3) _resolve_recruiter_job(query) 实时解析（可被 skip_resolve 旁路）
          → 0 匹配 → JOB_NOT_FOUND
          → 多匹配 → JOB_AMBIGUOUS（带 candidates）
@@ -182,6 +185,11 @@ def start_new_run(*, query: Optional[str], job_name: Optional[str],
       5) 调 cli_runner.run_python_cli('boss_jd', ...)
       6) 解析 stdout 抽 run_id
       7) 返回 waiting_user_confirmation
+
+    v1.1.3 fix：start 默认 login_wait_seconds=0 → 不在 CLI 内 sleep / 轮询等用户扫码；
+    只启动 Edge + 打开登录页 + 立即返回 waiting_user_login，
+    由 Agent 在用户明确"已登录"后重复执行同一条 start 完成登录复核。
+    `wait_for_user_login` 由 `login_wait_seconds > 0` 直接推导（无第二布尔开关）。
     """
     if not query:
         return error(
@@ -200,21 +208,29 @@ def start_new_run(*, query: Optional[str], job_name: Optional[str],
             },
         )
 
-    # 浏览器 + 登录态（v1.1.2：自动启动 Edge + 登录页轮询）
+    # 浏览器 + 登录态（v1.1.3：start 默认不阻塞扫码等待）
     if not skip_preflight:
+        # wait_for_user_login 由 login_wait_seconds > 0 推导；
+        # =0 → 启动 Edge + 打开登录页后立即返回 waiting_user_login；
+        # >0 → CLI 内阻塞 N 秒轮询（旧兼容路径，仅人工调试）。
+        wait_for_user_login = int(login_wait_seconds or 0) > 0
         ready = ensure_browser_ready(
             auto_launch=auto_launch_browser,
             login_wait_seconds=login_wait_seconds,
+            wait_for_user_login=wait_for_user_login,
         )
         if not ready.ok:
-            # 仍可能用户未登录且超时 → waiting_user_login（不是错误）
+            # v1.1.3: BOSS_LOGIN_REQUIRED 在 start 语境下是 "等用户扫码门"，
+            # 由 ensure_browser_ready 直接吐出 waiting_user_login 标记；
+            # start 把它包成 ok=True, status=waiting_user_login，
+            # 不创建 run、不抓 JD、不写 confirmed。
             if ready.error_obj and ready.error_obj.code == ErrorCode.BOSS_LOGIN_REQUIRED:
                 _info = ready.info or {}
                 _opened = bool(_info.get("login_page_opened", False))
                 if _opened:
                     _msg = (
                         "已为你打开专用 Edge，请在浏览器中扫码登录 BOSS 招聘者后台。"
-                        "完成后回复“好了”，我会继续当前任务。"
+                        "完成后回复“好了”，我会重新执行同一条 start。"
                     )
                 else:
                     # 登录页未自动打开：明确告诉用户手工打开
@@ -225,7 +241,7 @@ def start_new_run(*, query: Optional[str], job_name: Optional[str],
                         f"{_suffix}。"
                         "请在已打开的专用 Edge 窗口中手动打开 "
                         "https://www.zhipin.com/web/chat/recommend 登录。"
-                        "完成后回复“好了”，我会继续当前任务。"
+                        "完成后回复“好了”，我会重新执行同一条 start。"
                     )
                 return ok(
                     status="waiting_user_login",
@@ -235,8 +251,9 @@ def start_new_run(*, query: Optional[str], job_name: Optional[str],
                         "login_page_opened": _opened,
                         "login_page_open_error": _info.get("login_page_open_error", ""),
                         "login_wait_seconds": _info.get("login_wait_seconds", 0),
+                        "waiting_user_login": True,
                     },
-                    next_action="retry_same_command",
+                    next_action="scan_login_then_repeat_start",
                 )
             # 真正环境错误（Edge 不存在 / CDP 不可达 / auto_launch=False）
             return error(

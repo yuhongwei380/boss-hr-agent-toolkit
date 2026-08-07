@@ -41,6 +41,26 @@ def _resolve_encrypt_job_id(cli_value: Optional[str]) -> Optional[str]:
     return os.environ.get("BOSS_HR_ENCRYPT_JOB_ID")
 
 
+# download 超时策略：
+# - 节流时间长，固定 1800 仅为下限
+# - 随候选人数量 count 线性放大：300 + count * 60
+_DOWNLOAD_TIMEOUT_MIN_SECONDS = 1800
+_DOWNLOAD_TIMEOUT_BASE_SECONDS = 300
+_DOWNLOAD_TIMEOUT_PER_CANDIDATE_SECONDS = 60
+
+# list 抓取缓冲倍数：list 阶段多抓候选，作为 download 的供给缓冲，
+# 避免部分候选已命中 success/limit_hit 或失败吃掉配额，导致实际下载份数低于请求的 count。
+_LIST_FETCH_BUFFER_MULTIPLIER = 2
+
+
+def _calculate_download_timeout(count: int) -> int:
+    return max(
+        _DOWNLOAD_TIMEOUT_MIN_SECONDS,
+        _DOWNLOAD_TIMEOUT_BASE_SECONDS
+        + count * _DOWNLOAD_TIMEOUT_PER_CANDIDATE_SECONDS,
+    )
+
+
 def _infer_run_paths(job_name: str, eid: str, run_id: str) -> dict:
     """从 JobOutputManager 算 list / download 产物路径。"""
     from shared.output_manager import JobOutputManager
@@ -152,8 +172,11 @@ def fetch_candidates(*, job_name: str, encrypt_job_id: Optional[str],
             exit_code=ExitCode(rc),
         )
 
-    # v1.1.2: 自动启动 Edge + 登录态（不再要求用户预跑 doctor）
-    ready = ensure_browser_ready(auto_launch=True)
+    # v1.1.2: 自动启动 Edge + 登录态（不再要求用户预跑 doctor）。
+    # v1.1.3: fetch 保留 v1.1.2 旧轮询路径（wait_for_user_login=True，
+    # 默认 20s）。start 由单一参数 --login-wait-seconds 推导，
+    # =0 不阻塞、>0 阻塞；fetch/greet 保持兼容接线不变。
+    ready = ensure_browser_ready(auto_launch=True, wait_for_user_login=True)
     if not ready.ok:
         return error(
             error_obj=ready.error_obj,
@@ -163,14 +186,14 @@ def fetch_candidates(*, job_name: str, encrypt_job_id: Optional[str],
             remediation=ready.remediation,
         )
 
-    # Step 1: 调 recommend_list
+    # Step 1: 调 recommend_list（按 count * 缓冲倍数多抓，作为 download 供给缓冲）
     list_result = legacy_runner.run_legacy_cli(
         "recommend_list",
         [
             "--job-name", job_name,
             "--encrypt-job-id", eid,
             "--run-id", run_id,
-            "--max", str(count),
+            "--max", str(count * _LIST_FETCH_BUFFER_MULTIPLIER),
         ],
         timeout=600,
     )
@@ -191,7 +214,7 @@ def fetch_candidates(*, job_name: str, encrypt_job_id: Optional[str],
     listed = _read_json_array(paths["candidate_list_file"])
     listed_count = len(listed)
 
-    # Step 2: 调 recommend_download（用相同 --max）
+    # Step 2: 调 recommend_download（仍用用户请求的 --max，从 list 的 2x 缓冲池中最多下载 count 份）
     dl_result = legacy_runner.run_legacy_cli(
         "recommend_download",
         [
@@ -200,7 +223,7 @@ def fetch_candidates(*, job_name: str, encrypt_job_id: Optional[str],
             "--run-id", run_id,
             "--max", str(count),
         ],
-        timeout=1800,  # download 节流长
+        timeout=_calculate_download_timeout(count),  # download 节流长，按 count 动态放大
     )
 
     if dl_result.returncode != 0:

@@ -233,10 +233,12 @@ def test_start_waiting_user_login_does_not_call_boss_jd(monkeypatch):
     # 关键断言：ok=True（不是错误）+ status=waiting_user_login
     assert d["ok"] is True
     assert d["status"] == "waiting_user_login"
-    assert d["next_action"] == "retry_same_command"
+    # v1.1.3: next_action 由 retry_same_command 升级为 scan_login_then_repeat_start
+    assert d["next_action"] == "scan_login_then_repeat_start"
     assert d["data"]["browser_auto_launched"] is True
     assert d["data"]["login_page_opened"] is True
-    assert d["data"]["login_wait_seconds"] == 20
+    # v1.1.3 不再阻塞扫码；login_wait_seconds=1 推导 wait_for_user_login=True（轮询路径），
+    # 但 mock 直接返回 waiting_user_login 跳过轮询
     assert "登录" in d["message"]
     # 关键：未调 boss_jd
     assert called["boss_jd"] == 0, "waiting_user_login 不应调 boss_jd"

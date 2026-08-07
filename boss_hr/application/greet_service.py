@@ -133,7 +133,10 @@ def greet_candidates(*, job_name: str, encrypt_job_id: Optional[str],
         )
 
     # v1.1.2: 自动启动 Edge + 登录态
-    ready = ensure_browser_ready(auto_launch=True)
+    # v1.1.3: greet 保留 v1.1.2 旧轮询路径（wait_for_user_login=True，
+    # 默认 20s）。start 由单一参数 --login-wait-seconds 推导，
+    # =0 不阻塞、>0 阻塞；fetch/greet 保持兼容接线不变。
+    ready = ensure_browser_ready(auto_launch=True, wait_for_user_login=True)
     if not ready.ok:
         return error(
             error_obj=ready.error_obj,
