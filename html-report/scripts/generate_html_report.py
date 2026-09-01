@@ -254,7 +254,7 @@ def render(data: dict) -> str:
             f"<div class='action-section'><strong>📋 候选人背景：</strong>{a.get('background', '')}</div>"
             f"<div class='action-section'><strong>🎯 沟通方向：</strong>{a.get('action', '')}</div>"
         ) for a in actions["recommend"])
-        recommend_html = f'<section class="action-group"><h3>✅ 强烈推荐面试（≥70 分）</h3>{rows}</section>'
+        recommend_html = f'<section class="action-group"><h3>建议打招呼排行榜（≥70 分，不自动发送）</h3>{rows}</section>'
 
     pending_html = ""
     if actions.get("pending"):
@@ -316,7 +316,7 @@ def render(data: dict) -> str:
 <section class="section">
   <h2>📈 筛选总览</h2>
   <div class="overview">
-    <div class="stat-card green"><div class="num">{summary.get('recommend', 0)}</div><div class="label">✅ 推荐面试 (≥70)</div></div>
+    <div class="stat-card green"><div class="num">{summary.get('recommend', 0)}</div><div class="label">建议打招呼 (≥70)</div></div>
     <div class="stat-card yellow"><div class="num">{summary.get('pending', 0)}</div><div class="label">📌 待沟通确认 (60-69)</div></div>
     <div class="stat-card red"><div class="num">{summary.get('reject', 0)}</div><div class="label">❌ 不推荐 (&lt;60)</div></div>
     <div class="stat-card blue"><div class="num">{summary.get('total', 0)}</div><div class="label">📊 总候选人</div></div>

@@ -421,11 +421,11 @@ def test_fetch_count_maps_to_max_for_both(tmp_path, monkeypatch):
 
     proc = _run_cli_inproc(job_name=job, encrypt_job_id=eid, run_id=target, count=7)
     assert proc.returncode == 0
-    # 两个子脚本都收到 --max 7
+    # list 按 2 倍缓冲多抓；download 仍用用户请求的 count
     list_args = mock_calls[0]["args"]
     dl_args = mock_calls[1]["args"]
     assert "--max" in list_args
-    assert list_args[list_args.index("--max") + 1] == "7"
+    assert list_args[list_args.index("--max") + 1] == "14"
     assert "--max" in dl_args
     assert dl_args[dl_args.index("--max") + 1] == "7"
 

@@ -85,24 +85,43 @@ def check_patchright_installed() -> bool:
 
 
 def check_edge_executable() -> Optional[str]:
-    """Windows 查找 Microsoft Edge 可执行文件。返回路径或 None。"""
-    candidates = [
-        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe"),
-        os.path.expandvars(r"%PROGRAMFILES%\Microsoft\Edge\Application\msedge.exe"),
-        os.path.expandvars(r"%PROGRAMFILES(X86)%\Microsoft\Edge\Application\msedge.exe"),
-    ]
+    """查找 Edge / Chrome 可执行文件（Windows / macOS / Linux）。"""
+    candidates: list[str] = []
+    if os.name == "nt":
+        candidates = [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe"),
+            os.path.expandvars(r"%PROGRAMFILES%\Microsoft\Edge\Application\msedge.exe"),
+            os.path.expandvars(r"%PROGRAMFILES(X86)%\Microsoft\Edge\Application\msedge.exe"),
+        ]
+    elif sys.platform == "darwin":
+        candidates = [
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        ]
+    else:
+        candidates = [
+            "/usr/bin/microsoft-edge",
+            "/usr/bin/microsoft-edge-stable",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+        ]
     for p in candidates:
         if p and os.path.isfile(p):
             return p
-    # PATH 里找 msedge
+    exe_names = ("msedge.exe", "msedge") if os.name == "nt" else (
+        "msedge", "microsoft-edge", "google-chrome", "chromium",
+    )
     for d in os.environ.get("PATH", "").split(os.pathsep):
         if not d:
             continue
-        candidate = os.path.join(d, "msedge.exe" if os.name == "nt" else "msedge")
-        if os.path.isfile(candidate):
-            return candidate
+        for name in exe_names:
+            candidate = os.path.join(d, name)
+            if os.path.isfile(candidate):
+                return candidate
     return None
 
 

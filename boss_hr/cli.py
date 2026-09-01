@@ -89,7 +89,7 @@ COMMANDS = {
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="boss-hr",
-        description="BOSS HR 工具包统一 CLI（v1.1+）。",
+        description="BOSS HR 工具包统一 CLI（v1.2）。",
     )
     sub = p.add_subparsers(dest="command", required=True)
     for name, (add_args, _run_fn) in COMMANDS.items():

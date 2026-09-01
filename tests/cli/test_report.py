@@ -172,7 +172,7 @@ def test_report_happy_path(workspace):
     assert payload["run_id"] == target
     assert payload["encrypt_job_id"] == eid
     assert payload["job_name"] == job_name
-    assert payload["next_action"] == "greet_optional"
+    assert payload["next_action"] == "done"
     # data.report_file 必须存在
     report_file = payload["data"]["report_file"]
     assert os.path.isfile(report_file)

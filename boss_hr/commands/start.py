@@ -74,6 +74,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
             "负数被拒绝。"
         ),
     )
+    parser.add_argument(
+        "--rules", default=None,
+        help="筛选规则 JSON。传入后自动 confirm，不再停在人工筛选确认门；fetch 会点 BOSS 筛选器并粗筛",
+    )
 
 
 def run(args: argparse.Namespace) -> CommandResult:
@@ -85,6 +89,7 @@ def run(args: argparse.Namespace) -> CommandResult:
         encrypt_job_id=eid,
         auto_launch_browser=not bool(getattr(args, "no_auto_launch", False)),
         login_wait_seconds=login_wait,
+        rules_path=getattr(args, "rules", None),
     )
 
 

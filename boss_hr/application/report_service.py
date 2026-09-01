@@ -133,7 +133,7 @@ def generate_report(*, job_name: str, encrypt_job_id: str | None,
         run_id=bound_run_id,
         encrypt_job_id=eid, job_name=job_name,
         data={"report_file": os.path.abspath(result.report_file)},
-        next_action="greet_optional",
+        next_action="done",
     )
 
 

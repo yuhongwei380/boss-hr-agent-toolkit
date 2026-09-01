@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.2.0 — 规则全自动漏斗（2026-08-31）
+
+按规则点「推荐」Tab 和能映射的 BOSS 筛选器，再粗筛简历概览，合格者点击详情对照 JD 评分。报告给出建议打招呼排行榜，默认不发送。
+
+- `examples/rules.json` + `boss-hr start --rules`：自动 confirm
+- `boss-hr fetch --rules`：点筛选器 → 卡片粗筛 → `--click-detail` 打开详情并留底
+- 点不到的筛选器降级到粗筛，整轮不失败
+- 报告 `next_action=done`；HTML「建议打招呼排行榜」
+- macOS / Linux 浏览器路径查找；Unix 用 `start_new_session` 拉起浏览器
+- 仍建议 WorkBuddy / Codex 把浏览器 MCP 指到本机 `9222`，与 CLI 共用登录态
+
 ## v1.1.3 — greet 定位算法收口 + dry-run 严格化（2026-08-05）
 
 修复 v1.1.2 真实交互式 smoke 暴露的 greet not_found bug，并强化

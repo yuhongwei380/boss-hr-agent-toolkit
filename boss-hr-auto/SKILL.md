@@ -19,6 +19,36 @@ description: |
 type: workflow
 ---
 
+## v1.2 规则全自动（推荐）
+
+先复制 `examples/rules.json`，填学历/年限/关键词和 JD。浏览器请让 WorkBuddy / Codex 连同一只已登录的 Chromium（CDP `9222`），不要另开空浏览器。
+
+```bash
+# 0. 本机一只浏览器开远程调试（若 Agent 内置浏览器已暴露 9222 可跳过）
+# macOS 示例：
+# "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+#   --remote-debugging-port=9222 --user-data-dir="$HOME/.boss-hr-edge-profile"
+
+# 1. 创建任务（自动 confirm，不再停在网页筛选确认门）
+boss-hr start "<岗位名|jobId|encryptJobId>" --rules examples/rules.json
+# → status=waiting_user_login 时：在该浏览器扫码，再跑同一条 start
+# → status=ready_to_fetch 时拿到 run_id
+
+# 2. 点「推荐」Tab + 能映射的 BOSS 筛选器 → 拉卡片粗筛 → 合格者点击详情
+boss-hr fetch --job-name "<start 返回的 job_name>" \
+  --encrypt-job-id "<eid>" --run-id "<rid>" --rules examples/rules.json
+
+# 3. score 循环（每次一位；对照 job_detail.json 的 user_jd + 简历 detail_description）
+boss-hr score --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
+
+# 4. 报告（含建议打招呼排行榜；不自动发送）
+boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
+```
+
+未传 `--rules` 时仍走旧路径：start 后必须停下，等用户在 BOSS 网页改筛选并回复继续。
+
+---
+
 # BOSS HR 统一筛选流程（v1.1+）
 
 > 入口：`boss-hr` 统一 CLI。下文按步骤顺序调用 8 个公开命令。
@@ -31,6 +61,7 @@ type: workflow
 
 - 一次完整的新筛选任务；
 - start → confirm → fetch → score → report；
+- `start --rules` 按规则自动 confirm，接着 fetch 点「推荐」Tab / 能映射的 BOSS 筛选器 / 卡片粗筛 / 点击详情对照 JD；
 - 用户明确要求时执行 greet。
 
 **不支持**：
@@ -38,16 +69,16 @@ type: workflow
 - continue / batch / 多批累计；
 - 自动查找最新 run；
 - 从其他 run 补数据；
-- 自动跳过人工确认门。
+- 未传 `--rules` 时自动跳过人工确认门。
 
 ## 公开命令（v1.1.1 起 8 个：含 doctor）
 
 | 命令 | 作用 |
 |---|---|
 | `boss-hr doctor` | **环境健康检查 + 启动辅助**（首次或环境未知时先调） |
-| `boss-hr start` | 创建新 run，停在人工确认门 |
+| `boss-hr start` | 创建新 run。未传 `--rules` 时停在人工确认门；传 `--rules` 则自动 confirm |
 | `boss-hr confirm` | 把 `confirmed` 翻 true |
-| `boss-hr fetch --count N` | 拉候选人列表 + 下载 N 份简历 |
+| `boss-hr fetch --count N` | 拉候选人列表 + 下载简历。有规则时先点筛选器、粗筛卡片、再点开详情 |
 | `boss-hr score` | 评分协调（一次返回 1 位候选人） |
 | `boss-hr report` | 生成 HTML 报告 |
 | `boss-hr greet` | 给 ≥70 分候选人自动打招呼（需用户明确批准） |
@@ -155,11 +186,13 @@ start 内部通过 `shared.recruiter_job_catalog.resolve_recruiter_job(query)`
 - `JOB_AMBIGUOUS`：返回 `data.candidates` 让用户精确指定 encryptJobId
 - `JOB_ID_MISMATCH`：用户传的 `--encrypt-job-id` 与实时解析不一致
 
-**拿到 run_id 后立即停下**。向用户说明：
+**拿到 run_id 后立即停下**（未传 `--rules` 时）。向用户说明：
 
 > 请在 BOSS 推荐牛人页面调整筛选条件（关键词、年龄、薪资、经验等），调整完成后回复"继续"。
 
-**禁止**：
+若 `boss-hr start ... --rules <rules.json>` 返回 `status=ready_to_fetch`：不要停下等网页筛选，直接进入 fetch（同一 `--rules`）。
+
+**禁止**（未传 `--rules` 时）：
 
 - ❌ 同一轮继续执行 `confirm` 或 `fetch`
 - ❌ 把 start 输出的 run_id 之外的值传给后续命令
@@ -173,6 +206,7 @@ boss-hr fetch   --job-name "<>" --encrypt-job-id "<>" --run-id "<>" --count N
 
 - `confirm` 翻 `confirmed=true`、写 `user_confirmed_at`；**不入** `steps_done`。
 - `fetch --count N` 先 list 再 download；返回 `candidates_fetched`。
+- 传 `--rules` 时：点「推荐」Tab + 能映射的 BOSS 筛选器 → 卡片粗筛 → 只点击合格者详情并留底。
 - `fetch` 内部**不**触发 score / report / greet。
 
 **run_id 必须来自 step 1**，禁止扫描 `runs/` 找最新、禁止读 `current_run.json`。
@@ -184,7 +218,9 @@ LLM 循环：
 1. 调 `boss-hr score ...`。
 2. 若返回 `status=waiting_llm`：**只读**返回的 `data.input_file`；
    按 [resume-screener/SKILL.md §5](../resume-screener/SKILL.md) 评 4 维度
-   `exp / skill / proj / major`（0-100 最终分，**不评 edu**）；
+   `exp / skill / proj / major`（0-100 最终分，**不评 edu**）。
+   对照 `job_detail.json` 的 `user_jd`（规则提供的 JD，若有）以及候选人
+   `detail_description` / 工作与项目描述。
    把单个评分 object 写入返回的 `data.output_file`；
    **再调一次完全相同的** `boss-hr score ...`。
 3. 若返回 `status=scoring_complete`：进 step 4。
@@ -205,10 +241,10 @@ boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 
 ```json
 {"ok": true, "command": "report", "status": "report_ready",
- "data": {"report_file": "<绝对路径>"}, "next_action": "greet_optional"}
+ "data": {"report_file": "<绝对路径>"}, "next_action": "done"}
 ```
 
-把 `report_file` 路径告诉用户。**report 不自动调 greet**。
+把 `report_file` 路径告诉用户，并打开报告里的「建议打招呼排行榜」。**report 不自动调 greet**。
 
 ### 5. 打招呼：`boss-hr greet`（需用户明确批准）
 
@@ -239,7 +275,7 @@ boss-hr status --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | # | 规则 |
 |---|---|
 | 1 | 新任务必须调 `start`；start 不接受旧 run_id |
-| 2 | start 后必须停下，等用户回复"继续" |
+| 2 | 未传 `--rules` 时 start 后必须停下，等用户回复"继续"；传 `--rules` 且 status=ready_to_fetch 时进入 fetch |
 | 3 | 所有下游命令必须显式使用同一个 `run_id` |
 | 4 | 禁止扫描 `runs/` 猜 run_id |
 | 5 | 禁止读 `current_run.json`（已废弃） |
@@ -258,6 +294,7 @@ boss-hr status --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | 返回 status | 含义 | 智能体动作 |
 |---|---|---|
 | `waiting_user_confirmation` | start 完成，等用户回复"继续" | **停下**，告知用户去 BOSS 推荐牛人页面调整筛选条件 |
+| `ready_to_fetch` | start --rules 已自动 confirm | 进入 fetch（带同一 `--rules`） |
 | `waiting_user_login` | start 自动启动 Edge 后用户未登录 | **停下**，明确告诉用户"CDP 浏览器已经打开，请在浏览器内扫码登录"，**禁止 Agent 盲目循环 start**；用户明确回复"已登录"后，**重新执行完全相同的 `boss-hr start` 命令**（不传任何新参数），让 CLI 复核登录态 |
 | `confirmed` | confirm 完成 | 进入 fetch |
 | `candidates_fetched` | fetch 完成 | 进入 score 循环 |

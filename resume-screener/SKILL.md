@@ -183,6 +183,7 @@ python html-report/scripts/generate_html_report.py \
 - `education[]`（school_tier 查表 + 专业匹配）
 - `certifications[]`（英语 / 计算机证书是辅助证据）
 - `skills`（JD 关键词命中证据；空串也保留）
+- `detail_description` / `user_desc`（点开详情后的面板原文 / 自我描述，对照 JD 用）
 - 顶层 `geek_id` / `job_id`（从 `_meta` 抽出，供 score_resumes.py 去重）
 
 **额外**：

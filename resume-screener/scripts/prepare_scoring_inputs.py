@@ -57,6 +57,8 @@ KEEP_TOP_LEVEL = {
     "education",           # 教育经历数组（school_tier 查表依据 + 专业匹配依据）
     "certifications",      # 证书数组
     "skills",              # 技能字符串（JD 关键词命中证据；空串也保留，方便 LLM 看到"无技能"）
+    "detail_description",  # 点开详情面板抽出的原文
+    "user_desc",           # BOSS 自我描述
 }
 
 # work_experience[] 子字段白名单

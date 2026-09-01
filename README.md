@@ -64,7 +64,16 @@ python -m boss_hr --help # 等价入口
 完整 8 命令工作流（详见 [docs/CLI_WORKFLOW.md](docs/CLI_WORKFLOW.md)）：
 
 ```bash
-# 1. 直接创建新 run（停在人工确认门；v1.1.2 自动启动 Edge + 等登录）
+# === v1.2 推荐：规则全自动（点筛选器 → 粗筛卡片 → 点详情对照 JD）===
+# 先编辑 examples/rules.json（学历/年限/关键词/JD）
+boss-hr start "<岗位名|jobId|encryptJobId>" --rules examples/rules.json
+# → waiting_user_login：在 CDP 浏览器扫码后重试同一条 start
+# → ready_to_fetch：记下 run_id / encrypt_job_id / job_name
+boss-hr fetch --job-name "<>" --encrypt-job-id "<>" --run-id "<>" --rules examples/rules.json
+boss-hr score --job-name "<>" --encrypt-job-id "<>" --run-id "<>"   # 循环到 scoring_complete
+boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"  # 建议打招呼排行榜；不自动发送
+
+# === 旧路径：start 后停在人工确认门 ===
 boss-hr start "<encryptJobId|jobId|岗位名>" \
   --job-name "<岗位名>" --encrypt-job-id "<id>"
 # → status=waiting_user_confirmation，run_id=...

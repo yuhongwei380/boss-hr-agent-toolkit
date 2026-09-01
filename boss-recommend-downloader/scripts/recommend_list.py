@@ -31,7 +31,8 @@ import argparse
 
 def get_recommend_candidates(job_name='车架工程师', max_candidates=None,
                              batch_size=None, batch_number=None,
-                             run_id=None, encrypt_job_id=None):
+                             run_id=None, encrypt_job_id=None,
+                             rules_file=None):
     """
     获取推荐牛人候选人列表
 
@@ -101,6 +102,12 @@ def get_recommend_candidates(job_name='车架工程师', max_candidates=None,
             except Exception:
                 pass
 
+    rules = None
+    if rules_file:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
+        from screening_rules import load_rules
+        rules = load_rules(rules_file)
+
     with sync_playwright() as p:
         browser = p.chromium.connect_over_cdp('http://localhost:9222')
         ctx = browser.contexts[0]
@@ -125,6 +132,18 @@ def get_recommend_candidates(job_name='车架工程师', max_candidates=None,
                 pg.goto('https://www.zhipin.com/web/chat/recommend',
                         wait_until='networkidle', timeout=60000)
                 time.sleep(5)
+
+        if rules is not None:
+            from recommend_filters import apply_recommend_filters
+            print('按规则点「推荐」Tab 并尝试 BOSS 筛选器（点不到则降级粗筛）...')
+            applied = apply_recommend_filters(pg, rules)
+            applied_path = output.get_process_path('applied_filters.json')
+            with open(applied_path, 'w', encoding='utf-8') as f:
+                json.dump(applied, f, ensure_ascii=False, indent=2)
+            print(f'筛选器结果 → {applied_path}  '
+                  f'applied={len(applied.get("applied", []))} '
+                  f'skipped={len(applied.get("skipped", []))}')
+            time.sleep(2)
 
         # 等待 iframe 出现（最多 15 秒）
         iframe = None
@@ -233,6 +252,8 @@ if __name__ == '__main__':
     parser.add_argument('--batch', type=int, default=None, help='第几批，从1开始（分批模式）')
     parser.add_argument('--run-id', required=True,
                         help='【必填】run_id 是数据边界。新任务先跑 boss_jd.py 创建 run；不传直接报错。')
+    parser.add_argument('--rules-file', default=None,
+                        help='筛选规则 JSON。传入后会点「推荐」Tab 并尝试 BOSS 筛选器。')
 
     args = parser.parse_args()
 
@@ -241,9 +262,11 @@ if __name__ == '__main__':
                                  batch_size=args.batch_size,
                                  batch_number=args.batch,
                                  run_id=args.run_id,
-                                 encrypt_job_id=args.encrypt_job_id)
+                                 encrypt_job_id=args.encrypt_job_id,
+                                 rules_file=args.rules_file)
     else:
         get_recommend_candidates(args.job_name,
                                  max_candidates=args.max,
                                  run_id=args.run_id,
-                                 encrypt_job_id=args.encrypt_job_id)
+                                 encrypt_job_id=args.encrypt_job_id,
+                                 rules_file=args.rules_file)

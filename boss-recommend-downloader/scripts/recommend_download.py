@@ -89,7 +89,8 @@ FETCH_JS = """async (params) => {
 
 def download_resumes(job_name, batch_number=None, max_count=None,
                      pause_every=5, pause_min=60, pause_max=120,
-                     run_id=None, from_pool=False, encrypt_job_id=None):
+                     run_id=None, from_pool=False, encrypt_job_id=None,
+                     ids_file=None, click_detail=False):
     # 默认走 orchestrator，自动跟走上游创建的 run_id
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
     from run_orchestrator import RunOrchestrator
@@ -143,6 +144,8 @@ def download_resumes(job_name, batch_number=None, max_count=None,
         with open(tmp, 'w', encoding='utf-8') as f:
             json.dump(pool, f, ensure_ascii=False)
         input_path = tmp
+    elif ids_file:
+        input_path = ids_file
     elif batch_number:
         input_path = output.get_process_path(f'batch_{batch_number}_ids.json')
     else:
@@ -212,8 +215,25 @@ def download_resumes(job_name, batch_number=None, max_count=None,
         try:
             iframe = page.query_selector('iframe')
             iframe_box = iframe.bounding_box() if iframe else None
+            frame = iframe.content_frame() if iframe else None
         except Exception:
             iframe_box = None
+            frame = None
+
+        captured_info = {'data': None}
+
+        def _on_geek_info(resp):
+            url = resp.url or ''
+            if 'geek/info' in url or 'view/geek' in url:
+                try:
+                    captured_info['data'] = resp.json()
+                except Exception:
+                    pass
+
+        if click_detail:
+            page.on('response', _on_geek_info)
+            from recommend_filters import click_card_by_geek_id, extract_open_panel_text
+            from screening_rules import parse_geek_info_payload
 
         for i, g in enumerate(todo):
             if max_count and len(new_resumes) + len(failed) >= max_count:
@@ -238,13 +258,40 @@ def download_resumes(job_name, batch_number=None, max_count=None,
             except Exception as e:
                 print(f'  [上下文] 跳过:{str(e)[:40]}')
 
-            try:
-                result = page.evaluate(FETCH_JS, {
-                    'geek_id': geek_id,
-                    'job_id': job_id,
-                    'sec_id': sec_id
-                })
+            clicked = False
+            panel_text = ''
+            result = None
+            if click_detail:
+                captured_info['data'] = None
+                try:
+                    clicked = click_card_by_geek_id(page, frame, iframe_box, geek_id)
+                except Exception as e:
+                    print(f'  [点击] 失败:{str(e)[:40]}', end=' ')
+                    clicked = False
+                if clicked:
+                    deadline = time.time() + 8
+                    while time.time() < deadline and captured_info['data'] is None:
+                        time.sleep(0.3)
+                    if captured_info['data'] is not None:
+                        result = parse_geek_info_payload(
+                            captured_info['data'], geek_id=geek_id, job_id=job_id,
+                        )
+                    try:
+                        panel_text = extract_open_panel_text(frame)
+                    except Exception:
+                        panel_text = ''
 
+            if result is None:
+                try:
+                    result = page.evaluate(FETCH_JS, {
+                        'geek_id': geek_id,
+                        'job_id': job_id,
+                        'sec_id': sec_id
+                    })
+                except Exception as e:
+                    result = {'ok': False, 'error': str(e)}
+
+            try:
                 if result.get('ok'):
                     # 注入 _meta
                     result['_meta'] = {
@@ -253,12 +300,17 @@ def download_resumes(job_name, batch_number=None, max_count=None,
                         'encrypt_geek_id': geek_id,
                         'downloaded_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         'first_run_id': run_id,
+                        'opened_by_click': bool(clicked),
                     }
+                    if panel_text:
+                        result['detail_description'] = panel_text
+                    if result.get('user_desc') and not result.get('detail_description'):
+                        result['detail_description'] = result['user_desc']
                     # 写入累计（去重）
                     if store.save_resume(result, job_id, geek_id, run_id):
                         new_resumes.append(result)
                         store.mark_success(job_id, geek_id, run_id)
-                        print('OK')
+                        print('OK' + (' (点击详情)' if clicked else ''))
                     else:
                         # 已存在（理论上不会到这里，前面已过滤，但保险）
                         print('已在累计')
@@ -339,6 +391,10 @@ if __name__ == '__main__':
                         help='【必填】run_id 是数据边界。新任务先跑 boss_jd.py 创建 run；不传直接报错。')
     parser.add_argument('--from-pool', action='store_true',
                         help='从 state/candidate_pool.json 取未尝试的（跨 run 通杀）')
+    parser.add_argument('--ids-file', default=None,
+                        help='只下载该 JSON 列表中的候选人（粗筛合格名单）')
+    parser.add_argument('--click-detail', action='store_true',
+                        help='拟人点击卡片打开详情，拦截 geek/info 并抽出面板描述')
 
     args = parser.parse_args()
     download_resumes(args.job_name, args.batch, args.max,
@@ -347,4 +403,6 @@ if __name__ == '__main__':
                      pause_max=args.pause_max,
                      run_id=args.run_id,
                      from_pool=args.from_pool,
-                     encrypt_job_id=args.encrypt_job_id)
+                     encrypt_job_id=args.encrypt_job_id,
+                     ids_file=args.ids_file,
+                     click_detail=args.click_detail)

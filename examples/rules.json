@@ -1,0 +1,29 @@
+{
+  "job": {
+    "query": "把这里换成岗位中文名、jobId 或 encryptJobId",
+    "jd": "把岗位 JD 全文贴在这里。详情评分会按这份描述对照候选人经历。若留空，则使用 BOSS 上抓到的 JD。"
+  },
+  "boss_filters": {
+    "education": "本科",
+    "experience": "3-5年",
+    "keywords": "CATIA 车架",
+    "age": "",
+    "salary": ""
+  },
+  "coarse_screen": {
+    "education_min": "本科",
+    "years_min": 3,
+    "years_max": 10,
+    "keywords_any": ["CATIA", "车架", "底盘"],
+    "keywords_all": [],
+    "keywords_exclude": ["销售", "纯实习"],
+    "school_tier_min": ""
+  },
+  "download": {
+    "list_count": 40,
+    "max_details": 10
+  },
+  "score": {
+    "greet_threshold": 70
+  }
+}

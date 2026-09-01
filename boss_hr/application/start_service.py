@@ -164,7 +164,8 @@ def start_new_run(*, query: Optional[str], job_name: Optional[str],
                   skip_preflight: bool = False,
                   skip_resolve: bool = False,
                   auto_launch_browser: bool = True,
-                  login_wait_seconds: int = 0) -> CommandResult:
+                  login_wait_seconds: int = 0,
+                  rules_path: Optional[str] = None) -> CommandResult:
     """start 命令业务实现（v1.1.3 不阻塞扫码等待）。
 
     流程：
@@ -331,6 +332,69 @@ def start_new_run(*, query: Optional[str], job_name: Optional[str],
         )
 
     job_detail_file = _extract_job_detail_file_from_stdout(result.stdout or "")
+
+    if rules_path:
+        from screening_rules import load_rules, save_rules
+        from boss_hr.application.confirm_service import confirm_run as _confirm
+        try:
+            rules = load_rules(rules_path)
+        except FileNotFoundError as e:
+            return error(
+                error_obj=UnifiedError(
+                    code=ErrorCode.INTERNAL,
+                    message=str(e),
+                    recoverable=True,
+                ),
+                run_id=run_id, encrypt_job_id=resolved_eid, job_name=final_job_name,
+                exit_code=ExitCode.GENERIC,
+            )
+        from shared.output_manager import JobOutputManager
+        out = JobOutputManager(
+            final_job_name, encrypt_job_id=resolved_eid, run_id=run_id, lazy=True,
+        )
+        process_dir = os.path.join(out.runs_dir, run_id, "process")
+        os.makedirs(process_dir, exist_ok=True)
+        dest = os.path.join(process_dir, "screening_rules.json")
+        save_rules(rules, dest)
+        if rules.jd:
+            jd_path = os.path.join(process_dir, "job_detail.json")
+            detail = {}
+            if os.path.isfile(jd_path):
+                try:
+                    with open(jd_path, "r", encoding="utf-8") as f:
+                        detail = json.load(f) or {}
+                except Exception:
+                    detail = {}
+            if not isinstance(detail, dict):
+                detail = {}
+            detail["user_jd"] = rules.jd
+            if not detail.get("bodyText"):
+                detail["bodyText"] = rules.jd
+            with open(jd_path, "w", encoding="utf-8") as f:
+                json.dump(detail, f, ensure_ascii=False, indent=2)
+            job_detail_file = jd_path
+        confirmed = _confirm(
+            job_name=final_job_name,
+            encrypt_job_id=resolved_eid,
+            run_id=run_id,
+        )
+        if not confirmed.ok:
+            return confirmed
+        return ok(
+            status="ready_to_fetch",
+            run_id=run_id,
+            encrypt_job_id=resolved_eid,
+            job_name=final_job_name,
+            data={
+                "job_detail_file": job_detail_file,
+                "confirmed": True,
+                "rules_file": dest,
+                "resolved_from": "live_boss_catalog",
+                "auto_confirmed": True,
+            },
+            next_action="fetch",
+            message="已按规则自动确认。请接着跑 boss-hr fetch --rules <同一规则文件>。",
+        )
 
     return ok(
         status="waiting_user_confirmation",

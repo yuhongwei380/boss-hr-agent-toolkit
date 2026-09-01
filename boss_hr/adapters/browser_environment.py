@@ -145,14 +145,19 @@ def launch_dedicated_edge(*, wait_seconds: int = CDP_LAUNCH_WAIT_SECONDS
     _ensure_dir(profile_dir)
 
     cmd = _build_edge_launch_command(edge_path, profile_dir)
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
-                       | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+    popen_kwargs = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         )
+    else:
+        popen_kwargs["start_new_session"] = True
+    try:
+        proc = subprocess.Popen(cmd, **popen_kwargs)
     except Exception as e:
         return _EdgeLaunch(
             ok=False, error_code="EDGE_LAUNCH_FAILED",

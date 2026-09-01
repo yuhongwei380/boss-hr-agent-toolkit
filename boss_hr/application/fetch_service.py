@@ -73,6 +73,10 @@ def _infer_run_paths(job_name: str, eid: str, run_id: str) -> dict:
         "candidate_list_file": os.path.join(process_dir, "recommend_geek_ids.json"),
         "new_resumes_file": os.path.join(process_dir, "new_resumes.json"),
         "failed_resumes_file": os.path.join(process_dir, "failed_resumes.json"),
+        "rules_file": os.path.join(process_dir, "screening_rules.json"),
+        "screened_file": os.path.join(process_dir, "screened_geek_ids.json"),
+        "coarse_log_file": os.path.join(process_dir, "coarse_screen_log.json"),
+        "applied_filters_file": os.path.join(process_dir, "applied_filters.json"),
     }
 
 
@@ -125,7 +129,8 @@ def _read_json_array(path: str) -> list:
 
 
 def fetch_candidates(*, job_name: str, encrypt_job_id: Optional[str],
-                     run_id: Optional[str], count: int) -> CommandResult:
+                     run_id: Optional[str], count: int,
+                     rules_path: Optional[str] = None) -> CommandResult:
     """fetch 命令业务实现。
 
     流程：
@@ -186,15 +191,46 @@ def fetch_candidates(*, job_name: str, encrypt_job_id: Optional[str],
             remediation=ready.remediation,
         )
 
-    # Step 1: 调 recommend_list（按 count * 缓冲倍数多抓，作为 download 供给缓冲）
+    # Step 1: 调 recommend_list
+    # 有规则：按 list_count 拉卡片，并让 list 脚本点推荐 Tab + BOSS 筛选器
+    # 无规则：按 count * 缓冲倍数多抓（旧行为）
+    rules = None
+    rules_file_for_list = None
+    if rules_path:
+        from screening_rules import load_rules
+        try:
+            rules = load_rules(rules_path)
+        except FileNotFoundError as e:
+            return error(
+                error_obj=UnifiedError(
+                    code=ErrorCode.INTERNAL,
+                    message=str(e),
+                    recoverable=True,
+                ),
+                run_id=run_id, encrypt_job_id=eid, job_name=job_name,
+                exit_code=ExitCode.GENERIC,
+            )
+        rules_file_for_list = os.path.abspath(rules_path)
+    elif os.path.isfile(paths["rules_file"]):
+        from screening_rules import load_rules
+        rules = load_rules(paths["rules_file"])
+        rules_file_for_list = paths["rules_file"]
+
+    list_max = count * _LIST_FETCH_BUFFER_MULTIPLIER
+    list_args = [
+        "--job-name", job_name,
+        "--encrypt-job-id", eid,
+        "--run-id", run_id,
+        "--max", str(list_max),
+    ]
+    if rules is not None:
+        list_max = max(count, rules.list_count)
+        list_args[-1] = str(list_max)
+        list_args.extend(["--rules-file", rules_file_for_list])
+
     list_result = legacy_runner.run_legacy_cli(
         "recommend_list",
-        [
-            "--job-name", job_name,
-            "--encrypt-job-id", eid,
-            "--run-id", run_id,
-            "--max", str(count * _LIST_FETCH_BUFFER_MULTIPLIER),
-        ],
+        list_args,
         timeout=600,
     )
 
@@ -214,16 +250,46 @@ def fetch_candidates(*, job_name: str, encrypt_job_id: Optional[str],
     listed = _read_json_array(paths["candidate_list_file"])
     listed_count = len(listed)
 
-    # Step 2: 调 recommend_download（仍用用户请求的 --max，从 list 的 2x 缓冲池中最多下载 count 份）
+    download_args = [
+        "--job-name", job_name,
+        "--encrypt-job-id", eid,
+        "--run-id", run_id,
+        "--max", str(count),
+    ]
+    screened_count = listed_count
+    rejected_count = 0
+    if rules is not None:
+        from screening_rules import coarse_screen_list, save_rules
+        save_rules(rules, paths["rules_file"])
+        screened = coarse_screen_list(listed, rules)
+        passed = screened["passed"][: rules.max_details]
+        with open(paths["screened_file"], "w", encoding="utf-8") as f:
+            json.dump(passed, f, ensure_ascii=False, indent=2)
+        with open(paths["coarse_log_file"], "w", encoding="utf-8") as f:
+            json.dump({
+                "listed_count": screened["listed_count"],
+                "passed_count": screened["passed_count"],
+                "rejected_count": screened["rejected_count"],
+                "download_count": len(passed),
+                "rejected": [
+                    {"encryptGeekId": x.get("encryptGeekId"),
+                     "name": x.get("name"),
+                     "reasons": x.get("reasons")}
+                    for x in screened["rejected"]
+                ],
+            }, f, ensure_ascii=False, indent=2)
+        screened_count = len(passed)
+        rejected_count = screened["rejected_count"]
+        download_args[-1] = str(rules.max_details)
+        download_args.extend(["--ids-file", paths["screened_file"], "--click-detail"])
+
+    # Step 2: 调 recommend_download
     dl_result = legacy_runner.run_legacy_cli(
         "recommend_download",
-        [
-            "--job-name", job_name,
-            "--encrypt-job-id", eid,
-            "--run-id", run_id,
-            "--max", str(count),
-        ],
-        timeout=_calculate_download_timeout(count),  # download 节流长，按 count 动态放大
+        download_args,
+        timeout=_calculate_download_timeout(
+            rules.max_details if rules is not None else count
+        ),
     )
 
     if dl_result.returncode != 0:
@@ -251,11 +317,14 @@ def fetch_candidates(*, job_name: str, encrypt_job_id: Optional[str],
         data={
             "requested_count": count,
             "listed_count": listed_count,
+            "screened_count": screened_count,
+            "rejected_count": rejected_count,
             "downloaded_count": downloaded_count,
             "failed_count": failed_count,
             "candidate_list_file": paths["candidate_list_file"],
             "new_resumes_file": paths["new_resumes_file"],
             "failed_resumes_file": paths["failed_resumes_file"],
+            "click_detail": bool(rules is not None),
         },
         next_action="score",
     )
