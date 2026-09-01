@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.2.1 — 本地配置页（2026-09-01）
+
+`python config-ui/serve.py` 打开本机页面填写岗位 / JD / 筛选规则，写出
+`~/Desktop/boss-hr-output/_config/rules.json` 并复制给 Agent 的提示词。
+不新增 `boss-hr` 子命令。
+
+`boss-hr greet` **暂时禁用**：默认不启浏览器、不点击发送，返回
+`status=greet_disabled`。单测仍可通过 `BOSS_HR_GREET_ENABLED=1` 覆盖。
+
+配置页支持多个岗位（各自 JD）以及学历/经验芯片多选；蓝青/白界面。
+
 ## v1.2.0 — 规则全自动漏斗（2026-08-31）
 
 按规则点「推荐」Tab 和能映射的 BOSS 筛选器，再粗筛简历概览，合格者点击详情对照 JD 评分。报告给出建议打招呼排行榜，默认不发送。

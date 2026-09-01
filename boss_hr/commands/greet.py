@@ -26,7 +26,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--dry-run", action="store_true",
-        help="干跑：只定位不点击",
+        help="干跑：只定位不点击。注意：打招呼目前默认关闭，本命令不会发送。",
     )
 
 

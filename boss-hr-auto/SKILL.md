@@ -6,6 +6,7 @@ description: |
 
   **触发场景**：
   - "筛选简历" / "筛一下这个岗位" / "帮我筛选候选人"
+  - "打开配置页" / 用户贴来「规则文件：」路径
   - BOSS 直聘 HR 工具包全流程一次跑完
 
   **不触发场景**：
@@ -21,7 +22,14 @@ type: workflow
 
 ## v1.2 规则全自动（推荐）
 
-先复制 `examples/rules.json`，填学历/年限/关键词和 JD。浏览器请让 WorkBuddy / Codex 连同一只已登录的 Chromium（CDP `9222`），不要另开空浏览器。
+**人怎么用**：跑 `python config-ui/serve.py`，在本地页填岗位和 JD（可添加多个岗位），点「交给 Agent」，把复制出的提示词贴到对话里。不要让用户手写 JSON、不要让用户自己拼 `run_id`。
+
+若用户消息里已有 `规则文件：<path>`：直接用该路径作为 `--rules`，`start` 的 query 用提示词里的岗位名。
+若提示词列出**多个岗位**、多份规则文件：按顺序每个岗位单独 `start` 一次新任务（不要混用 `run_id`），做完一个再做下一个。
+
+浏览器请让 WorkBuddy / Codex 连同一只已登录的 Chromium（CDP `9222`），不要另开空浏览器。
+
+先复制 `examples/rules.json` 仅在不走配置页、需要手改 JSON 时使用。
 
 ```bash
 # 0. 本机一只浏览器开远程调试（若 Agent 内置浏览器已暴露 9222 可跳过）
@@ -62,7 +70,7 @@ boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 - 一次完整的新筛选任务；
 - start → confirm → fetch → score → report；
 - `start --rules` 按规则自动 confirm，接着 fetch 点「推荐」Tab / 能映射的 BOSS 筛选器 / 卡片粗筛 / 点击详情对照 JD；
-- 用户明确要求时执行 greet。
+- 用户明确要求时执行 greet（**当前暂时禁用**：即使明确批准也不执行，见铁律 10）。
 
 **不支持**：
 
@@ -81,7 +89,7 @@ boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | `boss-hr fetch --count N` | 拉候选人列表 + 下载简历。有规则时先点筛选器、粗筛卡片、再点开详情 |
 | `boss-hr score` | 评分协调（一次返回 1 位候选人） |
 | `boss-hr report` | 生成 HTML 报告 |
-| `boss-hr greet` | 给 ≥70 分候选人自动打招呼（需用户明确批准） |
+| `boss-hr greet` | 给 ≥70 分候选人打招呼（**暂时禁用**，返回 `greet_disabled`，不点击） |
 | `boss-hr status` | 读 `runs/<run_id>/run.json` + process 目录 |
 
 **禁止调用旧脚本**：`boss_jd.py` / `confirm_run.py` / `recommend_list.py` /
@@ -246,21 +254,16 @@ boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 
 把 `report_file` 路径告诉用户，并打开报告里的「建议打招呼排行榜」。**report 不自动调 greet**。
 
-### 5. 打招呼：`boss-hr greet`（需用户明确批准）
+### 5. 打招呼：`boss-hr greet`（暂时禁用）
 
-**只有用户明确要求"打招呼"或"招呼这几个人"时**才执行：
+**即使有用户明确批准，当前也不执行 `boss-hr greet`。** 报告只展示「建议打招呼排行榜」。若用户要求打招呼，告知「打招呼已暂时关闭」，不要重试该命令。
+
+命令仍在公开列表中；若被误调，会返回 `status=greet_disabled`、`next_action=done`，**不启浏览器、不点击发送**。
 
 ```bash
-boss-hr greet --job-name "<>" --encrypt-job-id "<>" --run-id "<>" \
-  [--only-names "张三,李四"] [--threshold 70] [--max 10] [--dry-run]
+# 暂时不要跑。恢复前即使执行也不会发送：
+boss-hr greet --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 ```
-
-**安全约束**：
-
-- 不得降低阈值、不得改分数、不得强制点名不推荐候选人发送；
-- score `< 70` 的候选人**不会**被打招呼（`no_candidates=true` 路径）；
-- 单 run `finished=true` 仅在 `greeted >= 1` 且 `maybe_finish` 成功时被设置
-  （`run.json.finished` ≠ `next_action="done"`）。
 
 ### 6. 状态查询：`boss-hr status`
 
@@ -283,7 +286,7 @@ boss-hr status --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | 7 | 禁止创建 `spec_*.json` 模板 |
 | 8 | 禁止直接调旧业务脚本（boss_jd / confirm_run / recommend_* / score_* / generate_html_report / auto_greet） |
 | 9 | 禁止调 `cli_runner` 或 `shared.cli_runner.run_python_cli` |
-| 10 | 禁止自动 greet（必须用户明确批准） |
+| 10 | 暂时禁用 greet：即使有用户明确批准也不执行 |
 | 11 | 禁止 continue / batch / 多批累计 |
 | 12 | 禁止为测试而降低阈值、篡改评分 |
 
@@ -301,6 +304,7 @@ boss-hr status --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | `waiting_llm` | score 需要 LLM 评一位 | 读 input_file、评、写 output_file、**再次调** `boss-hr score` |
 | `scoring_complete` | 评分收尾完成 | 进入 report |
 | `report_ready` | HTML 报告已生成 | 把 `report_file` 告诉用户；**不**自动 greet |
+| `greet_disabled` | 打招呼已暂时关闭 | 告知用户；不要重试 greet |
 | `greet_complete` | 本次 greet 命令结束 | 任务结束 |
 | （任意 `ok=false`） | 错误 | 见下方错误处理 |
 

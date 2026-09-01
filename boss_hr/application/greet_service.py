@@ -39,6 +39,17 @@ from boss_hr.adapters import legacy_runner
 from boss_hr.adapters.legacy_runner import legacy_error, try_extract_blocked_message
 from boss_hr.adapters.browser_environment import ensure_browser_ready
 
+# 暂时关闭真实打招呼。生产默认 False；单测通过 BOSS_HR_GREET_ENABLED=1 打开。
+# 人工恢复：环境变量 BOSS_HR_GREET_ENABLED=1
+GREET_ENABLED = False
+
+
+def is_greet_enabled() -> bool:
+    raw = os.environ.get("BOSS_HR_GREET_ENABLED")
+    if raw is not None and str(raw).strip() != "":
+        return str(raw).strip().lower() in ("1", "true", "yes", "on")
+    return bool(GREET_ENABLED)
+
 
 def _resolve_encrypt_job_id(cli_value: Optional[str]) -> Optional[str]:
     if cli_value:
@@ -103,7 +114,30 @@ def greet_candidates(*, job_name: str, encrypt_job_id: Optional[str],
       4) 失败 → 透传 rc
       5) 成功 → 读 greet_log.json 取 summary（可能不存在 → no_candidates）
       6) 返回 greet_complete
+
+    打招呼已暂时关闭（GREET_ENABLED=False）：不启浏览器、不点子进程、
+    不写 greet_log；返回 status=greet_disabled。设 BOSS_HR_GREET_ENABLED=1 可恢复。
     """
+    if not is_greet_enabled():
+        eid = _resolve_encrypt_job_id(encrypt_job_id)
+        return ok(
+            status="greet_disabled",
+            run_id=run_id,
+            encrypt_job_id=eid,
+            job_name=job_name,
+            data={
+                "greeted": 0,
+                "disabled": True,
+                "reason": "打招呼已暂时关闭",
+                "dry_run": dry_run,
+            },
+            next_action="done",
+            message=(
+                "打招呼已暂时关闭，未发送任何招呼。"
+                "恢复请设环境变量 BOSS_HR_GREET_ENABLED=1。"
+            ),
+        )
+
     eid = _resolve_encrypt_job_id(encrypt_job_id)
     if not eid:
         return error(

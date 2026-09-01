@@ -55,6 +55,30 @@ def auto_greet():
     return _load_auto_greet()
 
 
+@pytest.fixture(autouse=True)
+def _stub_greet_service_io(monkeypatch):
+    """greet_service 用例只断言 greet_log → CLI 映射，不启浏览器、不跑 auto_greet。"""
+    class _Ready:
+        ok = True
+        error_obj = None
+        next_action = None
+        remediation = None
+
+    class _Proc:
+        returncode = 0
+        stdout = "{}"
+        stderr = ""
+
+    monkeypatch.setattr(
+        "boss_hr.application.greet_service.ensure_browser_ready",
+        lambda **kw: _Ready(),
+    )
+    monkeypatch.setattr(
+        "boss_hr.adapters.legacy_runner.run_legacy_cli",
+        lambda *a, **k: _Proc(),
+    )
+
+
 # ============================================================
 # 1. _calc_summary 状态语义
 # ============================================================

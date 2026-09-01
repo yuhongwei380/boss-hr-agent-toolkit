@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>筛选配置 · BOSS HR</title>
+<style>
+  :root {
+    --snow: #ffffff;
+    --white: #ffffff;
+    --ink: #123047;
+    --ink-2: #4d6b7c;
+    --ink-3: #87a0ad;
+    --cyan: #1298aa;
+    --cyan-deep: #0d7d8c;
+    --wash: #e5f4f6;
+    --input: #eef6f8;
+    --line: rgba(18, 48, 71, 0.08);
+    --ring: rgba(18, 152, 170, 0.28);
+    --ok: #0f766e;
+    --err: #b42318;
+    --shadow: 0 0 0 1px var(--line), 0 12px 32px -16px rgba(18, 48, 71, 0.18);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: #fff; }
+  body {
+    background: #fff;
+    color: var(--ink);
+    font: 14px/1.5 "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 32px 24px 72px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 280px;
+    gap: 32px;
+    align-items: start;
+  }
+  .brand {
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--cyan-deep);
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  h1 {
+    font-size: 26px;
+    font-weight: 650;
+    letter-spacing: -0.03em;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  .lede { color: var(--ink-2); margin: 0 0 24px; max-width: 40em; }
+  h2 {
+    font-size: 13px;
+    font-weight: 650;
+    margin: 0 0 10px;
+  }
+  .block { margin-bottom: 22px; }
+  .hint { font-size: 12px; color: var(--ink-3); margin: 0 0 10px; }
+  .field { display: block; margin-bottom: 10px; }
+  .field > span {
+    display: block;
+    font-size: 12px;
+    color: var(--ink-2);
+    margin-bottom: 6px;
+  }
+  input[type="text"], input[type="number"], textarea {
+    width: 100%;
+    background: var(--input);
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: var(--ink);
+    font: inherit;
+    padding: 9px 11px;
+    outline: none;
+  }
+  textarea { min-height: 140px; resize: vertical; line-height: 1.6; }
+  input:focus, textarea:focus {
+    border-color: var(--cyan);
+    box-shadow: 0 0 0 3px var(--ring);
+    background: var(--white);
+  }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    appearance: none;
+    border: 1px solid var(--line);
+    background: var(--white);
+    color: var(--ink-2);
+    border-radius: 999px;
+    padding: 6px 12px;
+    min-height: 36px;
+    font: inherit;
+    cursor: pointer;
+  }
+  .chip[aria-pressed="true"] {
+    background: var(--wash);
+    border-color: var(--cyan);
+    color: var(--cyan-deep);
+    font-weight: 600;
+  }
+  .chip:hover { border-color: rgba(18, 152, 170, 0.45); }
+  .chip:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .tag-box {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    background: var(--input);
+    border-radius: 8px;
+    padding: 6px 8px;
+    min-height: 42px;
+  }
+  .tag-box:focus-within {
+    background: var(--white);
+    box-shadow: 0 0 0 3px var(--ring);
+  }
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--white);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 4px 8px 4px 10px;
+    font-size: 12px;
+  }
+  .tag button {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--ink-3);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 2px;
+    min-height: 22px;
+    min-width: 22px;
+  }
+  .tag-box input {
+    flex: 1;
+    min-width: 120px;
+    background: transparent;
+    border: 0;
+    padding: 4px;
+    box-shadow: none;
+  }
+  .tag-box input:focus { box-shadow: none; }
+  .job-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 12px; }
+  .job-tab {
+    appearance: none;
+    border: 1px solid var(--line);
+    background: var(--white);
+    color: var(--ink-2);
+    border-radius: 8px;
+    padding: 7px 12px;
+    min-height: 36px;
+    font: inherit;
+    cursor: pointer;
+  }
+  .job-tab[aria-selected="true"] {
+    background: var(--wash);
+    border-color: var(--cyan);
+    color: var(--cyan-deep);
+    font-weight: 600;
+  }
+  .job-bar .x {
+    margin-left: -4px;
+    color: var(--ink-3);
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    font-size: 16px;
+    min-height: 32px;
+    min-width: 28px;
+  }
+  .add-job {
+    appearance: none;
+    border: 1px dashed rgba(18, 152, 170, 0.45);
+    background: transparent;
+    color: var(--cyan-deep);
+    border-radius: 8px;
+    padding: 7px 12px;
+    min-height: 36px;
+    font: inherit;
+    cursor: pointer;
+  }
+  .panel {
+    background: var(--white);
+    border-radius: 12px;
+    padding: 14px;
+    box-shadow: 0 0 0 1px var(--line);
+  }
+  .summary {
+    position: sticky;
+    top: 20px;
+    background: var(--white);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+    padding: 20px;
+    border-top: 3px solid var(--cyan);
+  }
+  .summary h3 { margin: 0 0 14px; font-size: 16px; letter-spacing: -0.02em; }
+  .funnel { list-style: none; margin: 0 0 16px; padding: 0; }
+  .funnel li {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 13px;
+  }
+  .funnel .k { color: var(--ink-2); }
+  .funnel .v { font-weight: 650; font-variant-numeric: tabular-nums; }
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+    color: var(--cyan-deep);
+    background: var(--wash);
+    border-radius: 999px;
+    padding: 4px 8px;
+    margin-bottom: 12px;
+  }
+  .badge.saved { color: var(--ok); background: #e7f6f2; }
+  .actions { display: grid; gap: 8px; }
+  button.primary, button.ghost {
+    appearance: none;
+    border: 0;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 650;
+    border-radius: 10px;
+    padding: 11px 14px;
+    min-height: 44px;
+  }
+  button.primary { background: var(--cyan); color: #fff; }
+  button.primary:hover { background: var(--cyan-deep); }
+  button.ghost {
+    background: transparent;
+    color: var(--ink-2);
+    border: 1px solid var(--line);
+  }
+  button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .status { font-size: 12px; color: var(--ink-2); min-height: 32px; margin-top: 8px; white-space: pre-wrap; }
+  .status.ok { color: var(--ok); }
+  .status.err { color: var(--err); }
+  .path { font-size: 11px; color: var(--ink-3); word-break: break-all; margin-top: 6px; }
+  @media (max-width: 880px) {
+    .wrap { grid-template-columns: 1fr; }
+    .summary { position: static; }
+    .row, .row-3 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <main>
+      <div class="brand">Boss HR</div>
+      <h1>筛选配置</h1>
+      <p class="lede">可添加多个岗位，各自贴 JD。学历和经验可多选。保存后把提示词贴给 Agent。打招呼已关闭。</p>
+
+      <section class="block">
+        <h2>岗位</h2>
+        <div class="job-bar">
+          <div id="job-tabs" class="chips"></div>
+          <button type="button" class="add-job" id="btn-add-job">+ 添加岗位</button>
+        </div>
+        <div class="panel">
+          <label class="field">
+            <span>岗位名称 / jobId / encryptJobId</span>
+            <input id="query" type="text" autocomplete="off" placeholder="例如：车架工程师">
+          </label>
+          <label class="field">
+            <span>岗位 JD</span>
+            <textarea id="jd" placeholder="把该岗位 JD 贴在这里。留空则用 BOSS 上的描述。"></textarea>
+          </label>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2>网页筛选</h2>
+        <p class="hint">多选后会按最宽范围去点 BOSS 筛选器；点不到会降级到卡片粗筛。</p>
+        <div class="field">
+          <span>学历</span>
+          <div id="edu-chips" class="chips" role="group" aria-label="学历"></div>
+        </div>
+        <div class="field">
+          <span>经验</span>
+          <div id="exp-chips" class="chips" role="group" aria-label="经验"></div>
+        </div>
+        <div class="field">
+          <span>关键词</span>
+          <div id="boss-kw"></div>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2>卡片粗筛</h2>
+        <div class="field">
+          <span>院校门槛</span>
+          <div id="tier-chips" class="chips" role="group" aria-label="院校门槛"></div>
+        </div>
+        <div class="row">
+          <label class="field"><span>年限最低</span><input id="years_min" type="number" min="0" max="30" value="3"></label>
+          <label class="field"><span>年限最高</span><input id="years_max" type="number" min="0" max="40" value="10"></label>
+        </div>
+        <div class="field">
+          <span>任一命中（卡片上看不到则不否决）</span>
+          <div id="kw-any"></div>
+        </div>
+        <div class="field">
+          <span>排除词</span>
+          <div id="kw-ex"></div>
+        </div>
+        <div class="row-3">
+          <label class="field"><span>看多少张卡片</span><input id="list_count" type="number" min="1" max="200" value="40"></label>
+          <label class="field"><span>最多点开几份</span><input id="max_details" type="number" min="1" max="50" value="10"></label>
+          <label class="field"><span>建议打招呼分数</span><input id="greet_threshold" type="number" min="0" max="100" value="70"></label>
+        </div>
+      </section>
+    </main>
+
+    <aside class="summary" aria-label="提交摘要">
+      <div id="badge" class="badge">未保存</div>
+      <h3 id="stub-title">未命名岗位</h3>
+      <ul class="funnel">
+        <li><span class="k">岗位</span><span class="v" id="v-jobs">1</span></li>
+        <li><span class="k">看卡片</span><span class="v" id="v-list">40</span></li>
+        <li><span class="k">点开详情</span><span class="v" id="v-detail">10</span></li>
+        <li><span class="k">建议打招呼</span><span class="v" id="v-greet">≥70</span></li>
+        <li><span class="k">自动发送</span><span class="v">已关闭</span></li>
+      </ul>
+      <div class="actions">
+        <button class="primary" id="btn-submit" type="button">交给 Agent</button>
+        <button class="ghost" id="btn-copy" type="button">仅复制提示词</button>
+      </div>
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+      <div id="path" class="path"></div>
+    </aside>
+  </div>
+<script>
+const EDU = ["大专", "本科", "硕士", "博士"];
+const EXP = ["在校/应届", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"];
+const TIER = ["985", "211", "双一流", "一本公办"];
+
+const state = {
+  jobs: [{ query: "", jd: "" }],
+  active: 0,
+  education: ["本科"],
+  experience: ["3-5年"],
+  school_tier: [],
+};
+
+function $(id) { return document.getElementById(id); }
+
+function renderChips(rootId, options, selected, onChange) {
+  const root = $(rootId);
+  root.innerHTML = "";
+  options.forEach((opt) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chip";
+    btn.textContent = opt;
+    btn.setAttribute("aria-pressed", selected.includes(opt) ? "true" : "false");
+    btn.addEventListener("click", () => {
+      const next = selected.includes(opt)
+        ? selected.filter((x) => x !== opt)
+        : selected.concat(opt);
+      onChange(next);
+    });
+    root.appendChild(btn);
+  });
+}
+
+function tagInput(rootId, values, onChange, placeholder) {
+  const root = $(rootId);
+  root.innerHTML = "";
+  const box = document.createElement("div");
+  box.className = "tag-box";
+  values.forEach((v, i) => {
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.appendChild(document.createTextNode(v));
+    const x = document.createElement("button");
+    x.type = "button";
+    x.setAttribute("aria-label", "删除 " + v);
+    x.textContent = "×";
+    x.addEventListener("click", () => onChange(values.filter((_, j) => j !== i)));
+    tag.appendChild(x);
+    box.appendChild(tag);
+  });
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = placeholder;
+  const commit = () => {
+    const parts = input.value.split(/[,，、\s]+/).map((s) => s.trim()).filter(Boolean);
+    if (!parts.length) return;
+    const merged = values.slice();
+    parts.forEach((p) => { if (!merged.includes(p)) merged.push(p); });
+    input.value = "";
+    onChange(merged);
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      commit();
+    }
+    if (e.key === "Backspace" && !input.value && values.length) {
+      onChange(values.slice(0, -1));
+    }
+  });
+  input.addEventListener("blur", commit);
+  box.appendChild(input);
+  root.appendChild(box);
+}
+
+function syncJobFromFields() {
+  const job = state.jobs[state.active];
+  if (!job) return;
+  const q = $("query");
+  const d = $("jd");
+  if (q) job.query = q.value;
+  if (d) job.jd = d.value;
+}
+
+function renderTabs() {
+  const tabs = $("job-tabs");
+  tabs.innerHTML = "";
+  state.jobs.forEach((j, i) => {
+    const wrap = document.createElement("span");
+    wrap.style.display = "inline-flex";
+    wrap.style.alignItems = "center";
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = "job-tab";
+    tab.textContent = (j.query || ("岗位 " + (i + 1)));
+    tab.setAttribute("aria-selected", i === state.active ? "true" : "false");
+    tab.addEventListener("click", () => {
+      syncJobFromFields();
+      state.active = i;
+      showJob();
+      paint();
+    });
+    wrap.appendChild(tab);
+    if (state.jobs.length > 1) {
+      const x = document.createElement("button");
+      x.type = "button";
+      x.className = "x";
+      x.setAttribute("aria-label", "删除岗位");
+      x.textContent = "×";
+      x.addEventListener("click", (e) => {
+        e.stopPropagation();
+        syncJobFromFields();
+        state.jobs.splice(i, 1);
+        if (state.active >= state.jobs.length) state.active = state.jobs.length - 1;
+        showJob();
+        paint();
+      });
+      wrap.appendChild(x);
+    }
+    tabs.appendChild(wrap);
+  });
+}
+
+function showJob() {
+  const job = state.jobs[state.active] || { query: "", jd: "" };
+  $("query").value = job.query || "";
+  $("jd").value = job.jd || "";
+  renderTabs();
+}
+
+function collect() {
+  const liveQuery = ($("query").value || "").trim();
+  const liveJd = $("jd").value || "";
+  if (state.jobs[state.active]) {
+    if (liveQuery) state.jobs[state.active].query = liveQuery;
+    state.jobs[state.active].jd = liveJd;
+  }
+  const jobs = state.jobs.map((j) => ({
+    query: (j.query || "").trim(),
+    jd: j.jd || "",
+  }));
+  if (liveQuery && !jobs.some((j) => j.query)) {
+    const idx = state.active || 0;
+    jobs[idx] = { query: liveQuery, jd: liveJd };
+  }
+  const first = jobs.find((j) => j.query) || { query: liveQuery, jd: liveJd };
+  return {
+    jobs,
+    job: { query: first.query, jd: first.jd },
+    query: first.query,
+    jd: first.jd,
+    education: state.education,
+    experience: state.experience,
+    school_tier: state.school_tier,
+    boss_keywords: state.boss_keywords || [],
+    keywords_any: state.keywords_any || [],
+    keywords_exclude: state.keywords_exclude || [],
+    years_min: Number($("years_min").value),
+    years_max: Number($("years_max").value),
+    list_count: Number($("list_count").value),
+    max_details: Number($("max_details").value),
+    greet_threshold: Number($("greet_threshold").value),
+  };
+}
+
+function applyForm(form) {
+  state.jobs = (form.jobs && form.jobs.length) ? form.jobs.map((j) => ({
+    query: j.query || "", jd: j.jd || "",
+  })) : [{ query: "", jd: "" }];
+  state.active = 0;
+  state.education = form.education || [];
+  state.experience = form.experience || [];
+  state.school_tier = form.school_tier || [];
+  state.boss_keywords = form.boss_keywords || [];
+  state.keywords_any = form.keywords_any || [];
+  state.keywords_exclude = form.keywords_exclude || [];
+  $("years_min").value = form.years_min ?? 3;
+  $("years_max").value = form.years_max ?? 10;
+  $("list_count").value = form.list_count ?? 40;
+  $("max_details").value = form.max_details ?? 10;
+  $("greet_threshold").value = form.greet_threshold ?? 70;
+  showJob();
+  renderAll();
+  paint();
+}
+
+function renderAll() {
+  renderChips("edu-chips", EDU, state.education, (v) => { state.education = v; renderAll(); });
+  renderChips("exp-chips", EXP, state.experience, (v) => { state.experience = v; renderAll(); });
+  renderChips("tier-chips", TIER, state.school_tier, (v) => { state.school_tier = v; renderAll(); });
+  tagInput("boss-kw", state.boss_keywords || [], (v) => { state.boss_keywords = v; renderAll(); }, "输入后回车");
+  tagInput("kw-any", state.keywords_any || [], (v) => { state.keywords_any = v; renderAll(); }, "输入后回车");
+  tagInput("kw-ex", state.keywords_exclude || [], (v) => { state.keywords_exclude = v; renderAll(); }, "输入后回车");
+}
+
+function paint() {
+  syncJobFromFields();
+  const names = state.jobs.map((j) => (j.query || "").trim()).filter(Boolean);
+  $("stub-title").textContent = names.join("、") || "未命名岗位";
+  $("v-jobs").textContent = String(state.jobs.length);
+  $("v-list").textContent = $("list_count").value || "—";
+  $("v-detail").textContent = $("max_details").value || "—";
+  $("v-greet").textContent = "≥" + ($("greet_threshold").value || "70");
+}
+
+let dirty = false;
+function markDirty() { dirty = true; }
+
+$("btn-add-job").addEventListener("click", () => {
+  syncJobFromFields();
+  state.jobs.push({ query: "", jd: "" });
+  state.active = state.jobs.length - 1;
+  showJob();
+  paint();
+  $("query").focus();
+});
+$("query").addEventListener("input", () => {
+  markDirty();
+  syncJobFromFields();
+  renderTabs();
+  paint();
+});
+$("query").addEventListener("compositionend", () => {
+  markDirty();
+  syncJobFromFields();
+  renderTabs();
+  paint();
+});
+$("jd").addEventListener("input", () => { markDirty(); syncJobFromFields(); });
+["list_count", "max_details", "greet_threshold"].forEach((id) => $(id).addEventListener("input", paint));
+
+function setStatus(text, kind) {
+  const el = $("status");
+  el.textContent = text;
+  el.className = "status" + (kind ? " " + kind : "");
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (_) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  }
+}
+
+let lastPrompt = "";
+
+async function saveAndCopy() {
+  setStatus("正在保存…");
+  const res = await fetch("/api/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(collect()),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.ok) {
+    setStatus(data.error || "保存失败", "err");
+    return null;
+  }
+  lastPrompt = data.prompt || "";
+  $("path").textContent = (data.jobs || []).map((j) => j.rules_path).join("\n") || data.rules_path;
+  $("badge").textContent = "已保存";
+  $("badge").classList.add("saved");
+  return data;
+}
+
+$("btn-submit").addEventListener("click", async () => {
+  const data = await saveAndCopy();
+  if (!data) return;
+  const copied = await copyText(data.prompt);
+  setStatus(copied ? "已保存并复制提示词，去 Cursor 粘贴即可。" : data.prompt, copied ? "ok" : "");
+});
+$("btn-copy").addEventListener("click", async () => {
+  if (!lastPrompt) {
+    const data = await saveAndCopy();
+    if (!data) return;
+  }
+  const copied = await copyText(lastPrompt);
+  setStatus(copied ? "提示词已复制。" : lastPrompt, copied ? "ok" : "");
+});
+
+state.boss_keywords = [];
+state.keywords_any = [];
+state.keywords_exclude = [];
+showJob();
+renderAll();
+paint();
+
+fetch("/api/state")
+  .then((r) => r.json())
+  .then((data) => {
+    if (data.form && !dirty) applyForm(data.form);
+    if (data.rules_path && !dirty) $("path").textContent = data.rules_path;
+  })
+  .catch(() => {});
+</script>
+</body>
+</html>

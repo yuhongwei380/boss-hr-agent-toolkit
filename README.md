@@ -37,6 +37,22 @@
 
 **前置**：Windows + Python 3.10+ + Edge 浏览器 + `pip install -e .` 安装本工具包。
 
+### 更简单：本地配置页（推荐）
+
+不必手写 `rules.json`，也不用自己记 `run_id`：
+
+```bash
+python config-ui/serve.py
+```
+
+浏览器会打开配置页。填岗位、JD、学历/年限/关键词，点 **交给 Agent**。
+提示词会复制到剪贴板——贴进 Cursor 对话即可。Agent 按提示词跑
+`start → fetch → score → report`，**不会自动打招呼**。
+
+规则写在 `~/Desktop/boss-hr-output/_config/rules.json`。下次打开配置页会带上上次的内容。
+
+---
+
 > **v1.1.2 自动恢复**：**不需要**预先手动启动 Edge，也**不需要**预先跑
 > `boss-hr doctor`。直接 `boss-hr start` 即可：
 >
@@ -96,7 +112,7 @@ boss-hr score   --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
 # 4. report
 boss-hr report  --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
 
-# 5.（可选 + 用户明确批准时）greet — 这是**真实写操作**
+# 5.（可选）greet — **暂时禁用**，即使执行也不会发送
 boss-hr greet   --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
 
 # 6. 任意时点查看当前 run 状态

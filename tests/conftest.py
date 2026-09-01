@@ -48,6 +48,8 @@ def _isolate_output_root(tmp_path, monkeypatch):
     文件夹（2026-07-29）。所以必须直接 patch 模块属性。
     """
     monkeypatch.setenv("BOSS_HR_OUTPUT_DIR", str(tmp_path))
+    # 单测覆盖 greet 业务；生产默认关闭真实打招呼。
+    monkeypatch.setenv("BOSS_HR_GREET_ENABLED", "1")
 
     _shared = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "shared"))
     if _shared not in sys.path:
