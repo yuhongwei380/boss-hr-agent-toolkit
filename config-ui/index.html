@@ -60,7 +60,15 @@
     margin: 0 0 10px;
   }
   .block { margin-bottom: 22px; }
-  .hint { font-size: 12px; color: var(--ink-3); margin: 0 0 10px; }
+  .hint { font-size: 12px; color: var(--ink-3); margin: 0 0 10px; line-height: 1.55; }
+  .note {
+    font-size: 12px;
+    color: var(--ink-3);
+    margin: -2px 0 8px;
+    line-height: 1.6;
+    max-width: 42em;
+  }
+  .note strong { color: var(--ink-2); font-weight: 600; }
   .field { display: block; margin-bottom: 10px; }
   .field > span {
     display: block;
@@ -295,13 +303,15 @@
           <div id="exp-chips" class="chips" role="group" aria-label="经验"></div>
         </div>
         <div class="field">
-          <span>关键词</span>
+          <span>BOSS 搜索词</span>
+          <p class="note">会填进网页上的搜索框，用来<strong>找人</strong>。不要把「非全日制」写在这里。</p>
           <div id="boss-kw"></div>
         </div>
       </section>
 
       <section class="block">
         <h2>卡片粗筛</h2>
+        <p class="hint">只看推荐列表卡片上已经写出来的字。没写到的信息不会因此刷掉。</p>
         <div class="field">
           <span>院校门槛</span>
           <div id="tier-chips" class="chips" role="group" aria-label="院校门槛"></div>
@@ -311,11 +321,13 @@
           <label class="field"><span>年限最高</span><input id="years_max" type="number" min="0" max="40" value="10"></label>
         </div>
         <div class="field">
-          <span>任一命中（卡片上看不到则不否决）</span>
+          <span>希望看到的技能或方向</span>
+          <p class="note" id="help-kw-any">卡片上出现其中<strong>任意一个</strong>更好，例如 <strong>Java</strong>、<strong>MySQL</strong>。卡片太短没写到，也不会因此刷掉。每个词回车添加。</p>
           <div id="kw-any"></div>
         </div>
         <div class="field">
-          <span>排除词</span>
+          <span>不想要的人（出现就刷掉）</span>
+          <p class="note" id="help-kw-ex">卡片上出现这些字就不要。技术岗不想要非全日制，填 <strong>非全日制</strong>，回车添加。还可按卡片原文加：函授、自考、销售。</p>
           <div id="kw-ex"></div>
         </div>
         <div class="row-3">
@@ -535,9 +547,9 @@ function renderAll() {
   renderChips("edu-chips", EDU, state.education, (v) => { state.education = v; renderAll(); });
   renderChips("exp-chips", EXP, state.experience, (v) => { state.experience = v; renderAll(); });
   renderChips("tier-chips", TIER, state.school_tier, (v) => { state.school_tier = v; renderAll(); });
-  tagInput("boss-kw", state.boss_keywords || [], (v) => { state.boss_keywords = v; renderAll(); }, "输入后回车");
-  tagInput("kw-any", state.keywords_any || [], (v) => { state.keywords_any = v; renderAll(); }, "输入后回车");
-  tagInput("kw-ex", state.keywords_exclude || [], (v) => { state.keywords_exclude = v; renderAll(); }, "输入后回车");
+  tagInput("boss-kw", state.boss_keywords || [], (v) => { state.boss_keywords = v; renderAll(); }, "例如 CATIA，回车添加");
+  tagInput("kw-any", state.keywords_any || [], (v) => { state.keywords_any = v; renderAll(); }, "例如 Java，回车添加");
+  tagInput("kw-ex", state.keywords_exclude || [], (v) => { state.keywords_exclude = v; renderAll(); }, "例如 非全日制，回车添加");
 }
 
 function paint() {

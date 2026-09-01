@@ -165,6 +165,9 @@ def test_http_save_roundtrip(tmp_path):
         assert "筛选配置" in html
         assert "添加岗位" in html
         assert "交给 Agent" in html
+        assert "不想要的人" in html
+        assert "非全日制" in html
+        assert "希望看到的技能或方向" in html
         assert "job: { query: first.query" in html
     finally:
         httpd.shutdown()
