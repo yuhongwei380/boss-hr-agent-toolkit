@@ -32,8 +32,34 @@ def _iframe_and_frame(page):
     return iframe, frame, box
 
 
-def ensure_recommend_page(page) -> None:
+def job_name_matches(visible: str, query: str) -> bool:
+    """当前页上的职位名是否就是本次要筛的岗位。"""
+    a = "".join((visible or "").split())
+    b = "".join((query or "").split())
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if len(b) >= 6 and b in a:
+        return True
+    if a in b and len(a) >= max(6, int(len(b) * 0.6)):
+        return True
+    return False
+
+
+def ensure_recommend_page(page, encrypt_job_id: str | None = None) -> None:
     url = page.url or ""
+    if encrypt_job_id:
+        marker = f"encryptJobId={encrypt_job_id}"
+        if "zhipin.com/web/chat/recommend" in url and marker in url:
+            return
+        page.goto(
+            f"{RECOMMEND_URL}?encryptJobId={encrypt_job_id}",
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+        time.sleep(3)
+        return
     if "zhipin.com/web/chat/recommend" not in url:
         page.goto(RECOMMEND_URL, wait_until="domcontentloaded", timeout=60000)
         time.sleep(3)
@@ -70,6 +96,188 @@ def _click_text(page, frame, iframe_box, text, *, exact=True, timeout=2500) -> b
         return True
     except Exception:
         return False
+
+
+def _click_box(page, iframe_box, box) -> bool:
+    if not box:
+        return False
+    w = float(box.get("width") or box.get("w") or 0)
+    h = float(box.get("height") or box.get("h") or 0)
+    if w <= 0 or h <= 0:
+        return False
+    ox = iframe_box["x"] if iframe_box else 0
+    oy = iframe_box["y"] if iframe_box else 0
+    pt = (
+        ox + box["x"] + w * random.uniform(0.3, 0.7),
+        oy + box["y"] + h * random.uniform(0.3, 0.7),
+    )
+    human_move(page, pt)
+    time.sleep(random.uniform(0.08, 0.2))
+    page.mouse.click(pt[0], pt[1])
+    time.sleep(random.uniform(0.4, 0.9))
+    return True
+
+
+def _read_current_job(frame) -> str:
+    if frame is None:
+        return ""
+    try:
+        text = frame.evaluate(
+            """() => {
+                const sels = [
+                    '[class*="job-select"]',
+                    '[class*="jobSelect"]',
+                    '[class*="select-job"]',
+                    '[class*="cur-job"]',
+                    '[class*="current-job"]',
+                    '[class*="currentJob"]',
+                    '[class*="job-name"]',
+                    '[class*="position-name"]',
+                    '[ka*="job-select"]',
+                    '[ka*="recommend-job"]',
+                    '.ui-select-selected',
+                    '[class*="ui-select"] [class*="selected"]'
+                ];
+                for (const sel of sels) {
+                    const el = document.querySelector(sel);
+                    if (!el) continue;
+                    const t = (el.innerText || '').trim().split('\\n')[0].trim();
+                    if (t && t.length <= 40) return t;
+                }
+                return '';
+            }"""
+        )
+        return (text or "").strip()
+    except Exception:
+        return ""
+
+
+def _find_job_trigger_box(frame):
+    if frame is None:
+        return None
+    try:
+        return frame.evaluate(
+            """() => {
+                const sels = [
+                    '[class*="job-select"]',
+                    '[class*="jobSelect"]',
+                    '[class*="select-job"]',
+                    '[class*="cur-job"]',
+                    '[class*="current-job"]',
+                    '[class*="job-name"]',
+                    '[ka*="job-select"]',
+                    '[ka*="recommend-job"]',
+                    '.ui-select-selected'
+                ];
+                for (const sel of sels) {
+                    const el = document.querySelector(sel);
+                    if (!el) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width > 8 && r.height > 8) {
+                        return {x: r.x, y: r.y, width: r.width, height: r.height};
+                    }
+                }
+                return null;
+            }"""
+        )
+    except Exception:
+        return None
+
+
+def _find_job_option_box(frame, job_query: str):
+    if frame is None or not job_query:
+        return None
+    try:
+        return frame.evaluate(
+            """(query) => {
+                const nq = (query || '').replace(/\\s+/g, '');
+                if (!nq) return null;
+                const nodes = Array.from(document.querySelectorAll(
+                    'li, div, span, a, p, button, [role="option"]'
+                ));
+                let partial = null;
+                for (const el of nodes) {
+                    const raw = (el.innerText || '').trim().split('\\n')[0].trim();
+                    if (!raw || raw.length > 80) continue;
+                    const nt = raw.replace(/\\s+/g, '');
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 8 || r.height < 8) continue;
+                    const box = {x: r.x, y: r.y, width: r.width, height: r.height, text: raw};
+                    if (nt === nq) return box;
+                    if (!partial && nq.length >= 4 && (nt.includes(nq) || nq.includes(nt))) {
+                        partial = box;
+                    }
+                }
+                return partial;
+            }""",
+            job_query,
+        )
+    except Exception:
+        return None
+
+
+def _click_job_option(page, frame, iframe_box, job_query: str) -> bool:
+    if _click_text(page, frame, iframe_box, job_query, exact=True):
+        return True
+    box = _find_job_option_box(frame, job_query)
+    if _click_box(page, iframe_box, box):
+        return True
+    return _click_text(page, frame, iframe_box, job_query, exact=False)
+
+
+def select_recommend_job(page, frame, iframe_box, job_query: str) -> dict:
+    """把推荐页当前职位切到 job_query（点职位筛选 / 下拉）。"""
+    result = {
+        "ok": False,
+        "method": None,
+        "query": job_query or "",
+        "visible": "",
+        "reason": "",
+    }
+    if not job_query:
+        result["reason"] = "未提供岗位名"
+        return result
+
+    visible = _read_current_job(frame)
+    result["visible"] = visible
+    if job_name_matches(visible, job_query):
+        result["ok"] = True
+        result["method"] = "already"
+        return result
+
+    clicked = False
+    for label in ("职位", "岗位", "职位名称"):
+        if _open_filter_and_pick(page, frame, iframe_box, label, job_query):
+            clicked = True
+            result["method"] = f"filter:{label}"
+            break
+
+    if not clicked:
+        trigger = _find_job_trigger_box(frame)
+        if _click_box(page, iframe_box, trigger):
+            time.sleep(0.5)
+            if _click_job_option(page, frame, iframe_box, job_query):
+                clicked = True
+                result["method"] = "dropdown"
+        elif _click_job_option(page, frame, iframe_box, job_query):
+            clicked = True
+            result["method"] = "option"
+
+    visible = _read_current_job(frame) if clicked else visible
+    result["visible"] = visible
+    if job_name_matches(visible, job_query):
+        result["ok"] = True
+        if clicked and not result["method"]:
+            result["method"] = "click"
+        return result
+    if clicked and not visible:
+        result["ok"] = True
+        return result
+    if visible:
+        result["reason"] = f"当前职位是「{visible}」，不是「{job_query}」"
+    else:
+        result["reason"] = "未找到职位切换入口"
+    return result
 
 
 def click_recommend_tab(page, frame, iframe_box) -> bool:
@@ -141,23 +349,39 @@ def _fill_keyword_search(page, frame, iframe_box, keywords: str) -> bool:
     return False
 
 
-def apply_recommend_filters(page, rules) -> dict:
-    """在当前 page 上点推荐 Tab 并应用能映射的筛选器。
+def apply_recommend_filters(page, rules, *, job_name=None,
+                            encrypt_job_id=None) -> dict:
+    """在当前 page 上切到本次岗位、点推荐 Tab，并应用能映射的筛选器。
 
     rules: shared.screening_rules.ScreeningRules
     返回 applied_filters 结构（写入 process/applied_filters.json）。
     """
+    query = (job_name or getattr(rules, "job_query", "") or "").strip()
     log = {
         "tab_clicked": False,
         "applied": [],
         "skipped": [],
         "errors": [],
+        "job_selected": None,
     }
-    ensure_recommend_page(page)
+    ensure_recommend_page(page, encrypt_job_id=encrypt_job_id)
     _iframe, frame, iframe_box = _iframe_and_frame(page)
     if frame is None:
         log["errors"].append("未找到推荐页 iframe")
         return log
+
+    job_sel = select_recommend_job(page, frame, iframe_box, query)
+    log["job_selected"] = job_sel
+    if job_sel.get("ok"):
+        log["applied"].append({
+            "filter": "job",
+            "value": query,
+            "method": job_sel.get("method"),
+        })
+    else:
+        reason = job_sel.get("reason") or "未能切换到目标岗位"
+        log["errors"].append(reason)
+        log["skipped"].append({"filter": "job", "value": query, "reason": reason})
 
     log["tab_clicked"] = click_recommend_tab(page, frame, iframe_box)
     if not log["tab_clicked"]:

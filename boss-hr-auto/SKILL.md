@@ -86,7 +86,7 @@ boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | `boss-hr doctor` | **环境健康检查 + 启动辅助**（首次或环境未知时先调） |
 | `boss-hr start` | 创建新 run。未传 `--rules` 时停在人工确认门；传 `--rules` 则自动 confirm |
 | `boss-hr confirm` | 把 `confirmed` 翻 true |
-| `boss-hr fetch --count N` | 拉候选人列表 + 下载简历。有规则时先点筛选器、粗筛卡片、再点开详情 |
+| `boss-hr fetch --count N` | 拉候选人列表 + 下载简历。有规则时先切到本次岗位、点筛选器、粗筛卡片、再点开详情 |
 | `boss-hr score` | 评分协调（一次返回 1 位候选人） |
 | `boss-hr report` | 生成 HTML 报告 |
 | `boss-hr greet` | 给 ≥70 分候选人打招呼（**暂时禁用**，返回 `greet_disabled`，不点击） |

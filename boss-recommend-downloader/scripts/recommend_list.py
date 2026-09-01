@@ -119,6 +119,8 @@ def get_recommend_candidates(job_name='车架工程师', max_candidates=None,
             # batch 2+：连接已有页面，不重新加载
             print('连接已有推荐牛人页面（不刷新）...')
             time.sleep(3)
+        elif rules is not None:
+            print('按规则打开本次岗位的推荐牛人页（不复用上次打开的职位）...')
         else:
             # batch 1 / 普通模式：先检查当前页面 URL，避免覆盖用户在 BOSS 调好的筛选条件
             current_url = (pg.url or '')
@@ -135,14 +137,31 @@ def get_recommend_candidates(job_name='车架工程师', max_candidates=None,
 
         if rules is not None:
             from recommend_filters import apply_recommend_filters
-            print('按规则点「推荐」Tab 并尝试 BOSS 筛选器（点不到则降级粗筛）...')
-            applied = apply_recommend_filters(pg, rules)
+            print('按规则切换到本次岗位，点「推荐」Tab 并尝试 BOSS 筛选器（点不到则降级粗筛）...')
+            applied = apply_recommend_filters(
+                pg, rules,
+                job_name=job_name,
+                encrypt_job_id=encrypt_job_id,
+            )
             applied_path = output.get_process_path('applied_filters.json')
             with open(applied_path, 'w', encoding='utf-8') as f:
                 json.dump(applied, f, ensure_ascii=False, indent=2)
             print(f'筛选器结果 → {applied_path}  '
                   f'applied={len(applied.get("applied", []))} '
                   f'skipped={len(applied.get("skipped", []))}')
+            job_sel = applied.get("job_selected") or {}
+            visible = (job_sel.get("visible") or "").strip()
+            if visible and not job_sel.get("ok"):
+                msg = job_sel.get("reason") or (
+                    f"推荐页当前职位是「{visible}」，与本次岗位「{job_name}」不一致"
+                )
+                print(json.dumps({
+                    "status": "blocked",
+                    "exit_code": 24,
+                    "run_id": run_id,
+                    "message": msg,
+                }, ensure_ascii=False))
+                raise SystemExit(24)
             time.sleep(2)
 
         # 等待 iframe 出现（最多 15 秒）
