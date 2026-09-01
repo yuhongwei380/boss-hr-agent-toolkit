@@ -87,6 +87,12 @@ def prompt_file(output_root: Optional[str] = None) -> Path:
     return config_dir(output_root) / PROMPT_FILENAME
 
 
+TIER_FORM_ALIASES = {
+    "民办": "民办本科",
+    "民办/独立学院": "民办本科",
+}
+
+
 def _as_list(value: Any) -> list[str]:
     if not value:
         return []
@@ -116,6 +122,7 @@ def _lowest_school_tier(names: list[str]) -> Optional[str]:
         text = str(name).strip()
         if not text or text == "不限":
             continue
+        text = TIER_FORM_ALIASES.get(text, text)
         score = TIER_MIN_SCORE.get(text)
         if score is None:
             continue
@@ -158,7 +165,10 @@ def form_from_rules_dict(raw: dict) -> dict[str, Any]:
         "jobs": [{"query": str(job.get("query") or ""), "jd": str(job.get("jd") or "")}],
         "education": edu or ["本科"],
         "experience": exp or ["3-5年"],
-        "school_tier": _as_list(coarse.get("school_tier_min")),
+        "school_tier": [
+            TIER_FORM_ALIASES.get(t, t)
+            for t in _as_list(coarse.get("school_tier_min"))
+        ],
         "boss_keywords": _as_list(boss.get("keywords")),
         "keywords_any": _as_list(coarse.get("keywords_any")),
         "keywords_exclude": _as_list(coarse.get("keywords_exclude")),
@@ -277,9 +287,10 @@ def build_agent_prompt(
         f"/ 项目 {pct['proj']}% / 专业 {pct['major']}%"
     )
     lines = [
-        "请按这些规则开始 BOSS 推荐牛人筛选，不要自动打招呼。",
-        "报告完成后把建议打招呼排行榜给用户看。"
-        f"只有用户明确说打招呼时，才调用 boss-hr greet --threshold {int(greet_threshold)} --max {int(greet_max)}。",
+        "请按这些规则开始 BOSS 推荐牛人筛选。",
+        "报告完成后把建议打招呼排行榜给用户看，接着调用 "
+        f"boss-hr greet --threshold {int(greet_threshold)} --max {int(greet_max)}。",
+        "不要超过 --max，不要招呼低于阈值的人。",
         "",
         f"评分标准：{profile.label}。总分权重：{weight_line}。",
         f"LLM 评经验、技能、项目、专业时：{profile.llm_guide}",
@@ -297,7 +308,7 @@ def build_agent_prompt(
             f"用 boss-hr start \"{query}\" --rules \"{path}\"。"
             f"若返回 waiting_user_login，让我在专用浏览器扫码后再重试同一条 start。"
             f"ready_to_fetch 后用返回的 job_name / encrypt_job_id / run_id 跑 "
-            f"fetch（同一 --rules）→ score 循环到 scoring_complete → report。"
+            f"fetch（同一 --rules）→ score 循环到 scoring_complete → report → greet。"
         )
         return "\n".join(lines)
 
@@ -311,7 +322,7 @@ def build_agent_prompt(
         "对每个岗位依次：boss-hr start \"<岗位>\" --rules \"<该岗位规则文件>\"；"
         "waiting_user_login 则让我扫码后重试同一条 start；"
         "ready_to_fetch 后用该次返回的 job_name / encrypt_job_id / run_id 跑 "
-        "fetch（同一 --rules）→ score 循环 → report。做完一个再做下一个。"
+        "fetch（同一 --rules）→ score 循环 → report → greet。做完一个再做下一个。"
     )
     return "\n".join(lines)
 

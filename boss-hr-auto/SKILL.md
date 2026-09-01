@@ -49,8 +49,10 @@ boss-hr fetch --job-name "<start 返回的 job_name>" \
 # 3. score 循环（每次一位；对照 job_detail.json 的 user_jd + 简历 detail_description）
 boss-hr score --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 
-# 4. 报告（含建议打招呼排行榜；不自动发送）
+# 4. 报告（含建议打招呼排行榜）后按规则招呼
 boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
+boss-hr greet  --job-name "<>" --encrypt-job-id "<>" --run-id "<>" \
+  --threshold <规则 greet_threshold> --max <规则 greet_max>
 ```
 
 未传 `--rules` 时仍走旧路径：start 后必须停下，等用户在 BOSS 网页改筛选并回复继续。
@@ -68,9 +70,9 @@ boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 **支持**：
 
 - 一次完整的新筛选任务；
-- start → confirm → fetch → score → report；
+- start → confirm → fetch → score → report → greet；
 - `start --rules` 按规则自动 confirm，接着 fetch 点「推荐」Tab / 能映射的 BOSS 筛选器 / 卡片粗筛 / 点击详情对照 JD；
-- 用户明确要求时执行 greet。
+- report 完成后按规则 `greet_threshold` / `greet_max` 调用 greet。
 
 **不支持**：
 
@@ -89,7 +91,7 @@ boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | `boss-hr fetch --count N` | 拉候选人列表 + 下载简历。有规则时先切到本次岗位、点筛选器、粗筛卡片、再点开详情 |
 | `boss-hr score` | 评分协调（一次返回 1 位候选人） |
 | `boss-hr report` | 生成 HTML 报告 |
-| `boss-hr greet` | 给 ≥阈值 的候选人打招呼（默认 70；需用户明确批准，report 不自动调用） |
+| `boss-hr greet` | 给 ≥阈值 的候选人打招呼（默认 70；有规则时 report 后按 `greet_max` 发送） |
 | `boss-hr status` | 读 `runs/<run_id>/run.json` + process 目录 |
 
 **禁止调用旧脚本**：`boss_jd.py` / `confirm_run.py` / `recommend_list.py` /
@@ -254,11 +256,11 @@ boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
  "data": {"report_file": "<绝对路径>"}, "next_action": "done"}
 ```
 
-把 `report_file` 路径告诉用户，并打开报告里的「建议打招呼排行榜」。**report 不自动调 greet**。
+把 `report_file` 路径告诉用户，并打开报告里的「建议打招呼排行榜」。**有规则时接着调 greet**（`--threshold` / `--max` 用规则里的值）。
 
-### 5. 打招呼：`boss-hr greet`（需用户明确批准）
+### 5. 打招呼：`boss-hr greet`（report 后按规则发送）
 
-**只有用户明确要求「打招呼」或「招呼这几个人」时**才执行。report 不自动调用。
+报告完成后调用。人数不超过规则 `greet_max`，分数不低于 `greet_threshold`。
 
 ```bash
 boss-hr greet --job-name "<>" --encrypt-job-id "<>" --run-id "<>" \
@@ -271,6 +273,7 @@ boss-hr greet --job-name "<>" --encrypt-job-id "<>" --run-id "<>" \
 
 - 不得降低阈值、不得改分数、不得强制点名不推荐候选人发送；
 - 默认不招呼低于阈值的人；
+- 不得超过 `greet_max`；
 - 单 run `finished=true` 仅在 `greeted >= 1` 且 `maybe_finish` 成功时被设置。
 
 ### 6. 状态查询：`boss-hr status`
@@ -294,7 +297,7 @@ boss-hr status --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | 7 | 禁止创建 `spec_*.json` 模板 |
 | 8 | 禁止直接调旧业务脚本（boss_jd / confirm_run / recommend_* / score_* / generate_html_report / auto_greet） |
 | 9 | 禁止调 `cli_runner` 或 `shared.cli_runner.run_python_cli` |
-| 10 | 禁止自动 greet（必须用户明确批准） |
+| 10 | 有规则时 report 后按 greet_threshold / greet_max 调用 greet；禁止超人数、禁止降阈值 |
 | 11 | 禁止 continue / batch / 多批累计 |
 | 12 | 禁止为测试而降低阈值、篡改评分 |
 
@@ -311,7 +314,7 @@ boss-hr status --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | `candidates_fetched` | fetch 完成 | 进入 score 循环 |
 | `waiting_llm` | score 需要 LLM 评一位 | 读 input_file、评、写 output_file、**再次调** `boss-hr score` |
 | `scoring_complete` | 评分收尾完成 | 进入 report |
-| `report_ready` | HTML 报告已生成 | 把 `report_file` 告诉用户；**不**自动 greet |
+| `report_ready` | HTML 报告已生成 | 把 `report_file` 告诉用户，并按规则调用 greet |
 | `greet_complete` | 本次 greet 命令结束 | 任务结束 |
 | （任意 `ok=false`） | 错误 | 见下方错误处理 |
 

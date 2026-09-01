@@ -47,7 +47,7 @@ python config-ui/serve.py
 
 浏览器会打开配置页。填岗位、JD、学历/年限/关键词，点 **交给 Agent**。
 提示词会复制到剪贴板——贴进 Cursor 对话即可。Agent 按提示词跑
-`start → fetch → score → report`，**不会自动打招呼**；你明确说打招呼后才会发。
+`start → fetch → score → report → greet`，报告完成后按配置的分数线和人数上限打招呼。
 
 规则写在 `~/Desktop/boss-hr-output/_config/rules.json`。下次打开配置页会带上上次的内容。
 
@@ -87,7 +87,7 @@ boss-hr start "<岗位名|jobId|encryptJobId>" --rules examples/rules.json
 # → ready_to_fetch：记下 run_id / encrypt_job_id / job_name
 boss-hr fetch --job-name "<>" --encrypt-job-id "<>" --run-id "<>" --rules examples/rules.json
 boss-hr score --job-name "<>" --encrypt-job-id "<>" --run-id "<>"   # 循环到 scoring_complete
-boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"  # 建议打招呼排行榜；不自动发送
+boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"  # 建议打招呼排行榜；随后按规则招呼
 
 # === 旧路径：start 后停在人工确认门 ===
 boss-hr start "<encryptJobId|jobId|岗位名>" \
@@ -112,7 +112,7 @@ boss-hr score   --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
 # 4. report
 boss-hr report  --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
 
-# 5.（可选 + 用户明确批准时）greet — 这是**真实写操作**
+# 5. greet — 报告后按规则发送，这是**真实写操作**
 boss-hr greet   --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
 
 # 6. 任意时点查看当前 run 状态

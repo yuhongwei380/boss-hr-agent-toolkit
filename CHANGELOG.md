@@ -6,7 +6,7 @@
 `~/Desktop/boss-hr-output/_config/rules.json` 并复制给 Agent 的提示词。
 不新增 `boss-hr` 子命令。
 
-`boss-hr greet` 已重新启用：报告后仍不自动发送，需用户明确批准。
+`boss-hr greet` 已重新启用：报告完成后按规则 `greet_threshold` / `greet_max` 发送。
 紧急关闭可设 `BOSS_HR_GREET_ENABLED=0`。
 
 配置页支持多个岗位（各自 JD）以及学历/经验芯片多选；蓝青/白界面。

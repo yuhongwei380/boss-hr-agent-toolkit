@@ -59,7 +59,9 @@ def test_save_writes_rules_and_prompt(tmp_path):
     assert rules.max_details == 6
     assert rules.score_profile == "tech"
     prompt = Path(result["rules_path"]).with_name("agent-prompt.txt").read_text(encoding="utf-8")
-    assert "不要自动打招呼" in prompt
+    assert "接着调用" in prompt
+    assert "boss-hr greet --threshold 75" in prompt
+    assert "--max 10" in prompt
     assert "车架工程师" in prompt
     assert str(path) in prompt
     assert "boss-hr start" in prompt
@@ -90,19 +92,19 @@ def test_save_multiple_jobs_writes_each_rules_file(tmp_path):
     prompt = (tmp_path / "_config" / "agent-prompt.txt").read_text(encoding="utf-8")
     assert "多个岗位" in prompt
     assert "车架工程师" in prompt and "结构工程师" in prompt
-    assert "明确说打招呼" in prompt
+    assert "report → greet" in prompt
 
 
-def test_build_agent_prompt_contains_path_and_no_auto_greet():
+def test_build_agent_prompt_contains_path_and_auto_greet_after_report():
     text = config_serve.build_agent_prompt([
         {"rules_path": r"D:\rules.json", "query": "结构工程师"},
     ])
     assert r"D:\rules.json" in text
     assert "结构工程师" in text
-    assert "不要自动打招呼" in text
-    assert "明确说打招呼" in text
-    assert "--threshold 70" in text
-    assert "--max 10" in text
+    assert "接着调用" in text
+    assert "boss-hr greet --threshold 70 --max 10" in text
+    assert "不要自动打招呼" not in text
+    assert "明确说打招呼" not in text
     assert "技术类岗位" in text
     assert "学历 25%" in text
 
@@ -143,6 +145,26 @@ def test_save_greet_max_writes_rules_and_prompt(tmp_path):
     prompt = Path(result["rules_path"]).with_name("agent-prompt.txt").read_text(encoding="utf-8")
     assert "--threshold 75" in prompt
     assert "--max 5" in prompt
+
+
+def test_save_school_tier_erben_writes_min(tmp_path):
+    result = config_serve.save_config(
+        {
+            "jobs": [{"query": "销售代表", "jd": "JD"}],
+            "education": ["本科"],
+            "school_tier": ["二本公办"],
+        },
+        str(tmp_path),
+    )
+    rules = load_rules(result["rules_path"])
+    assert rules.school_tier_min == "二本公办"
+
+
+def test_lowest_school_tier_picks_loosest_and_aliases():
+    assert config_serve._lowest_school_tier(["C9", "一本公办"]) == "一本公办"
+    assert config_serve._lowest_school_tier(["不限"]) is None
+    assert config_serve._lowest_school_tier(["民办"]) == "民办本科"
+    assert config_serve._lowest_school_tier(["985"]) == "985"
 
 
 def test_save_jobs_array_without_legacy_job_key(tmp_path):
@@ -219,6 +241,12 @@ def test_http_save_roundtrip(tmp_path):
         assert "看多少张简历卡片" in html
         assert "最多点开多少份简历" in html
         assert "最多给几个人打招呼" in html
+        assert "报告后招呼" in html
+        assert "自动发送" not in html
+        assert "C9" in html
+        assert "二本公办" in html
+        assert "民办本科" in html
+        assert "不限" in html
     finally:
         httpd.shutdown()
         httpd.server_close()

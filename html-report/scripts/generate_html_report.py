@@ -254,7 +254,7 @@ def render(data: dict) -> str:
             f"<div class='action-section'><strong>📋 候选人背景：</strong>{a.get('background', '')}</div>"
             f"<div class='action-section'><strong>🎯 沟通方向：</strong>{a.get('action', '')}</div>"
         ) for a in actions["recommend"])
-        recommend_html = f'<section class="action-group"><h3>建议打招呼排行榜（≥70 分，不自动发送）</h3>{rows}</section>'
+        recommend_html = f'<section class="action-group"><h3>建议打招呼排行榜（≥70 分）</h3>{rows}</section>'
 
     pending_html = ""
     if actions.get("pending"):

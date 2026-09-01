@@ -8,9 +8,9 @@
   :root {
     --snow: #ffffff;
     --white: #ffffff;
-    --ink: #123047;
-    --ink-2: #4d6b7c;
-    --ink-3: #87a0ad;
+    --ink: #000000;
+    --ink-2: #000000;
+    --ink-3: #000000;
     --cyan: #1298aa;
     --cyan-deep: #0d7d8c;
     --wash: #e5f4f6;
@@ -42,7 +42,7 @@
     font-size: 11px;
     letter-spacing: 0.16em;
     text-transform: uppercase;
-    color: var(--cyan-deep);
+    color: var(--ink);
     font-weight: 600;
     margin-bottom: 6px;
   }
@@ -68,7 +68,7 @@
     line-height: 1.6;
     max-width: 42em;
   }
-  .note strong { color: var(--ink-2); font-weight: 600; }
+  .note strong { color: var(--ink); font-weight: 600; }
   .field { display: block; margin-bottom: 10px; }
   .field > span {
     display: block;
@@ -109,7 +109,7 @@
   .chip[aria-pressed="true"] {
     background: var(--wash);
     border-color: var(--cyan);
-    color: var(--cyan-deep);
+    color: var(--ink);
     font-weight: 600;
   }
   .chip:hover { border-color: rgba(18, 152, 170, 0.45); }
@@ -180,7 +180,7 @@
   .job-tab[aria-selected="true"] {
     background: var(--wash);
     border-color: var(--cyan);
-    color: var(--cyan-deep);
+    color: var(--ink);
     font-weight: 600;
   }
   .job-bar .x {
@@ -195,9 +195,9 @@
   }
   .add-job {
     appearance: none;
-    border: 1px dashed rgba(18, 152, 170, 0.45);
+    border: 1px dashed rgba(18, 48, 71, 0.35);
     background: transparent;
-    color: var(--cyan-deep);
+    color: var(--ink);
     border-radius: 8px;
     padding: 7px 12px;
     min-height: 36px;
@@ -235,7 +235,7 @@
     font-size: 11px;
     font-weight: 650;
     letter-spacing: 0.06em;
-    color: var(--cyan-deep);
+    color: var(--ink);
     background: var(--wash);
     border-radius: 999px;
     padding: 4px 8px;
@@ -257,7 +257,7 @@
   button.primary:hover { background: var(--cyan-deep); }
   button.ghost {
     background: transparent;
-    color: var(--ink-2);
+    color: var(--ink);
     border: 1px solid var(--line);
   }
   button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
@@ -304,7 +304,8 @@
     vertical-align: top;
     border-bottom: 1px solid var(--line);
   }
-  .score-body th { color: var(--ink-3); font-weight: 600; }
+  .score-body th { color: var(--ink); font-weight: 600; }
+  input::placeholder, textarea::placeholder { color: #000; opacity: 1; }
   .score-body ul { margin: 0 0 8px; padding-left: 1.2em; }
   @media (max-width: 880px) {
     .wrap { grid-template-columns: 1fr; }
@@ -318,7 +319,7 @@
     <main>
       <div class="brand">Boss HR</div>
       <h1>筛选配置</h1>
-      <p class="lede">可添加多个岗位，各自贴 JD。学历和经验可多选。保存后把提示词贴给 Agent。报告后需你确认才打招呼。</p>
+      <p class="lede">可添加多个岗位，各自贴 JD。学历和经验可多选。保存后把提示词贴给 Agent。报告完成后按人数上限自动打招呼。</p>
 
       <section class="block">
         <h2>岗位</h2>
@@ -352,7 +353,7 @@
               <tbody id="score-rows"></tbody>
             </table>
             <ul id="score-tiers"></ul>
-            <p>报告出来后不会自动发招呼，需要你在对话里明确说「打招呼」。</p>
+            <p>报告完成后按上面的分数线和人数上限自动打招呼，不会再问一次。</p>
           </div>
         </details>
       </section>
@@ -380,7 +381,8 @@
         <p class="hint">只看推荐列表卡片上已经写出来的字。没写到的信息不会因此刷掉。</p>
         <div class="field">
           <span>院校门槛</span>
-          <div id="tier-chips" class="chips" role="group" aria-label="院校门槛"></div>
+          <p class="note">选一档作为<strong>最低要求</strong>，这一档及以上都过。点「不限」则不卡学校。技术岗常选 211 / 一本公办，销售岗常选二本或不限，实习看学校可以选更高。</p>
+          <div id="tier-chips" class="chips" role="radiogroup" aria-label="院校门槛"></div>
         </div>
         <div class="row">
           <label class="field"><span>年限最低</span><input id="years_min" type="number" min="0" max="30" value="3"></label>
@@ -404,6 +406,7 @@
           <label class="field"><span>建议打招呼分数</span><input id="greet_threshold" type="number" min="0" max="100" value="70"></label>
           <label class="field"><span>最多给几个人打招呼</span><input id="greet_max" type="number" min="1" max="50" value="10"></label>
         </div>
+        <p class="note">报告完成后按这个分数线和人数上限自动发招呼，不会再问一次。</p>
       </section>
     </main>
 
@@ -416,8 +419,7 @@
         <li><span class="k">看简历卡片</span><span class="v" id="v-list">40</span></li>
         <li><span class="k">点开简历</span><span class="v" id="v-detail">10</span></li>
         <li><span class="k">建议打招呼</span><span class="v" id="v-greet">≥70</span></li>
-        <li><span class="k">最多招呼</span><span class="v" id="v-greet-max">10</span></li>
-        <li><span class="k">自动发送</span><span class="v">需确认</span></li>
+        <li><span class="k">报告后招呼</span><span class="v" id="v-greet-max">10人</span></li>
       </ul>
       <div class="actions">
         <button class="primary" id="btn-submit" type="button">交给 Agent</button>
@@ -430,7 +432,7 @@
 <script>
 const EDU = ["大专", "本科", "硕士", "博士"];
 const EXP = ["在校/应届", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"];
-const TIER = ["985", "211", "双一流", "一本公办"];
+const TIER = ["不限", "C9", "985", "211", "双一流", "一本公办", "二本公办", "民办本科"];
 const SCORE_PROFILES = {
   tech: {
     id: "tech",
@@ -508,6 +510,43 @@ function renderChips(rootId, options, selected, onChange) {
         ? selected.filter((x) => x !== opt)
         : selected.concat(opt);
       onChange(next);
+    });
+    root.appendChild(btn);
+  });
+}
+
+function normalizeTier(list) {
+  const order = TIER.filter((t) => t !== "不限");
+  const names = (list || []).map((t) => (t === "民办" || t === "民办/独立学院") ? "民办本科" : t)
+    .filter((t) => t && t !== "不限" && order.indexOf(t) >= 0);
+  if (!names.length) return [];
+  let pick = names[0];
+  names.forEach((t) => {
+    if (order.indexOf(t) > order.indexOf(pick)) pick = t;
+  });
+  return [pick];
+}
+
+function renderMinBarChips(rootId, options, selected, onChange) {
+  const root = $(rootId);
+  root.innerHTML = "";
+  const current = normalizeTier(selected);
+  const unlimited = current.length === 0;
+  options.forEach((opt) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chip";
+    btn.textContent = opt;
+    btn.setAttribute("role", "radio");
+    const on = opt === "不限" ? unlimited : current.includes(opt);
+    btn.setAttribute("aria-checked", on ? "true" : "false");
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.addEventListener("click", () => {
+      if (opt === "不限") {
+        onChange([]);
+        return;
+      }
+      onChange(current.includes(opt) ? [] : [opt]);
     });
     root.appendChild(btn);
   });
@@ -633,7 +672,7 @@ function collect() {
     jd: first.jd,
     education: state.education,
     experience: state.experience,
-    school_tier: state.school_tier,
+    school_tier: normalizeTier(state.school_tier),
     boss_keywords: state.boss_keywords || [],
     keywords_any: state.keywords_any || [],
     keywords_exclude: state.keywords_exclude || [],
@@ -654,7 +693,7 @@ function applyForm(form) {
   state.active = 0;
   state.education = form.education || [];
   state.experience = form.experience || [];
-  state.school_tier = form.school_tier || [];
+  state.school_tier = normalizeTier(form.school_tier || []);
   state.boss_keywords = form.boss_keywords || [];
   state.keywords_any = form.keywords_any || [];
   state.keywords_exclude = form.keywords_exclude || [];
@@ -673,7 +712,7 @@ function applyForm(form) {
 function renderAll() {
   renderChips("edu-chips", EDU, state.education, (v) => { state.education = v; renderAll(); });
   renderChips("exp-chips", EXP, state.experience, (v) => { state.experience = v; renderAll(); });
-  renderChips("tier-chips", TIER, state.school_tier, (v) => { state.school_tier = v; renderAll(); });
+  renderMinBarChips("tier-chips", TIER, state.school_tier, (v) => { state.school_tier = v; renderAll(); });
   renderProfileChips();
   renderScoreHelp();
   tagInput("boss-kw", state.boss_keywords || [], (v) => { state.boss_keywords = v; renderAll(); }, "例如 CATIA，回车添加");
@@ -745,7 +784,7 @@ function paint() {
   $("v-list").textContent = $("list_count").value || "—";
   $("v-detail").textContent = $("max_details").value || "—";
   $("v-greet").textContent = "≥" + ($("greet_threshold").value || "70");
-  $("v-greet-max").textContent = $("greet_max").value || "10";
+  $("v-greet-max").textContent = ($("greet_max").value || "10") + "人";
 }
 
 let dirty = false;
