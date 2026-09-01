@@ -47,7 +47,7 @@ python config-ui/serve.py
 
 浏览器会打开配置页。填岗位、JD、学历/年限/关键词，点 **交给 Agent**。
 提示词会复制到剪贴板——贴进 Cursor 对话即可。Agent 按提示词跑
-`start → fetch → score → report`，**不会自动打招呼**。
+`start → fetch → score → report`，**不会自动打招呼**；你明确说打招呼后才会发。
 
 规则写在 `~/Desktop/boss-hr-output/_config/rules.json`。下次打开配置页会带上上次的内容。
 
@@ -112,7 +112,7 @@ boss-hr score   --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
 # 4. report
 boss-hr report  --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
 
-# 5.（可选）greet — **暂时禁用**，即使执行也不会发送
+# 5.（可选 + 用户明确批准时）greet — 这是**真实写操作**
 boss-hr greet   --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
 
 # 6. 任意时点查看当前 run 状态

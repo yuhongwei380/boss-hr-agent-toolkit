@@ -88,33 +88,52 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from school_tier import lookup as school_lookup
 
-# === 5 维度权重（2026-07-21 调整：工作经验 30%→25%，专业匹配 5%→10%）===
-WEIGHTS = {"edu": 0.25, "exp": 0.25, "skill": 0.25, "proj": 0.15, "major": 0.10}
-WEIGHTS_PCT = {"edu": 25, "exp": 25, "skill": 25, "proj": 15, "major": 10}
+_SHARED = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "shared"))
+if _SHARED not in sys.path:
+    sys.path.insert(0, _SHARED)
+from score_profiles import DEFAULT_PROFILE, get_profile  # noqa: E402
+
+# === 默认权重 = 技术类岗位。实际评分按 rules.json 的 score.profile 切换。===
+WEIGHTS = dict(get_profile(DEFAULT_PROFILE).weights)
+WEIGHTS_PCT = dict(get_profile(DEFAULT_PROFILE).weights_pct)
 
 # === 维度中文标签（顺序与 WEIGHTS 一致，供报告展示）===
 DIM_LABELS = ["学历", "工作经验", "技能", "项目", "专业"]
 
 # === Tier 阈值（SKILL.md 硬性规定）===
-TIER_THRESHOLDS = {"推荐": 70, "待定": 60, "不推荐": 0}
+TIER_THRESHOLDS = dict(get_profile(DEFAULT_PROFILE).thresholds)
+
+
+def _weights_or_default(weights: dict | None) -> dict:
+    return weights if weights is not None else WEIGHTS
+
+
+def _thresholds_or_default(thresholds: dict | None) -> dict:
+    return thresholds if thresholds is not None else TIER_THRESHOLDS
+
+
+def _pct_or_default(weights_pct: dict | None) -> dict:
+    return weights_pct if weights_pct is not None else WEIGHTS_PCT
 
 
 # ============================================================
 # 核心工具函数（agent 直接 import 调用）
 # ============================================================
 
-def calc_tier(total: float) -> str:
+def calc_tier(total: float, thresholds: dict | None = None) -> str:
     """根据 total 判定 tier"""
-    if total >= TIER_THRESHOLDS["推荐"]:
+    bars = _thresholds_or_default(thresholds)
+    if total >= bars["推荐"]:
         return "推荐"
-    if total >= TIER_THRESHOLDS["待定"]:
+    if total >= bars["待定"]:
         return "待定"
     return "不推荐"
 
 
-def calc_weighted(dims: dict) -> dict:
-    """5 维度 weighted 计算（按 SKILL.md 公式）"""
-    return {k: round(dims[k] * WEIGHTS[k], 2) for k in WEIGHTS}
+def calc_weighted(dims: dict, weights: dict | None = None) -> dict:
+    """5 维度 weighted 计算（按当前岗位类型的权重）"""
+    w = _weights_or_default(weights)
+    return {k: round(dims[k] * w[k], 2) for k in w}
 
 
 def calc_total(weighted: dict) -> float:
@@ -148,7 +167,7 @@ def _extract_school_name(score: dict) -> str:
     return m.group(1).strip() if m else school
 
 
-def validate_score(score: dict) -> dict:
+def validate_score(score: dict, weights: dict = None, thresholds: dict = None) -> dict:
     """LLM 评分收尾（统一方案的核心）
 
     1. 用 school_tier 强制校准 edu（无论 LLM 是否评了 edu）
@@ -172,9 +191,9 @@ def validate_score(score: dict) -> dict:
         score["dims"]["edu"] = 60
         score["dims_edu_reason"] = "缺失（无学校名，按60计）"
 
-    score["weighted"] = calc_weighted(score["dims"])
+    score["weighted"] = calc_weighted(score["dims"], weights)
     score["total"] = calc_total(score["weighted"])
-    score["tier"] = calc_tier(score["total"])
+    score["tier"] = calc_tier(score["total"], thresholds)
     return score
 
 
@@ -182,10 +201,11 @@ def validate_score(score: dict) -> dict:
 # Schema 转换
 # ============================================================
 
-def candidate_to_report(c: dict, rank: int) -> dict:
+def candidate_to_report(c: dict, rank: int, weights_pct: dict = None) -> dict:
     """把 1 份评分（list 形式）转成报告 candidates[] 形式"""
     dims = c["dims"]
     weighted = c["weighted"]
+    pct = _pct_or_default(weights_pct)
     return {
         "rank": rank,
         "name": c["name"],
@@ -200,7 +220,7 @@ def candidate_to_report(c: dict, rank: int) -> dict:
             {
                 "pct": dims[k],
                 "weighted": weighted[k],
-                "weight": WEIGHTS_PCT[k],
+                "weight": pct[k],
                 "reason": c.get(f"dims_{k}_reason", "")
             }
             for k in ["edu", "exp", "skill", "proj", "major"]
@@ -251,6 +271,18 @@ def build_meta(job_name: str, job_info: dict = None) -> dict:
         }),
         "core_requirements": job.get("core_requirements", []),
     }
+
+
+def _load_score_profile(process_rules_path: str):
+    """从本次 run 的 screening_rules.json 读岗位类型；没有则用技术类。"""
+    if not process_rules_path or not os.path.isfile(process_rules_path):
+        return get_profile(DEFAULT_PROFILE)
+    try:
+        from screening_rules import load_rules
+        rules = load_rules(process_rules_path)
+        return get_profile(getattr(rules, "score_profile", DEFAULT_PROFILE))
+    except Exception:
+        return get_profile(DEFAULT_PROFILE)
 
 
 # ============================================================
@@ -439,8 +471,12 @@ def main():
             return
 
     # 对每份评分收尾（强制用 school_tier 校准 edu + 重算 total + 判定 tier）
+    profile = _load_score_profile(out.get_process_path("screening_rules.json"))
+    weights = dict(profile.weights)
+    weights_pct = dict(profile.weights_pct)
+    thresholds = dict(profile.thresholds)
     for c in data:
-        validate_score(c)
+        validate_score(c, weights=weights, thresholds=thresholds)
 
     # 按 total 倒序
     data.sort(key=lambda x: -x["total"])
@@ -454,7 +490,10 @@ def main():
     }
 
     # 转 candidates 格式
-    candidates = [candidate_to_report(c, i + 1) for i, c in enumerate(data)]
+    candidates = [
+        candidate_to_report(c, i + 1, weights_pct=weights_pct)
+        for i, c in enumerate(data)
+    ]
     actions = build_actions(candidates)
 
     # 解析 job_info（可选）
@@ -462,6 +501,11 @@ def main():
 
     # 组装 screening_results.json
     meta = build_meta(args.job_name, job_info)
+    meta["score_profile"] = {
+        "id": profile.id,
+        "label": profile.label,
+        "weights_pct": weights_pct,
+    }
     generated_at = time.strftime("%Y-%m-%d %H:%M:%S")
     if args.run_id:
         meta["run_id"] = args.run_id

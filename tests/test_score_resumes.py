@@ -27,6 +27,7 @@ sys.path.insert(0, _SHARED)
 import pytest  # noqa: E402
 
 import score_resumes as sr  # noqa: E402
+from score_profiles import get_profile  # noqa: E402
 
 
 @pytest.fixture
@@ -121,6 +122,16 @@ def test_calc_total_all_zero():
 def test_calc_total_all_hundred():
     weighted = sr.calc_weighted({"edu": 100, "exp": 100, "skill": 100, "proj": 100, "major": 100})
     assert sr.calc_total(weighted) == 100.0
+
+
+def test_sales_weights_change_total():
+    dims = {"edu": 100, "exp": 40, "skill": 40, "proj": 40, "major": 40}
+    tech = sr.calc_total(sr.calc_weighted(dims))
+    sales = sr.calc_total(sr.calc_weighted(dims, get_profile("sales").weights))
+    intern = sr.calc_total(sr.calc_weighted(dims, get_profile("intern").weights))
+    assert tech > sales
+    assert intern > sales
+    assert intern != tech
 
 
 # ============================================================
@@ -388,6 +399,47 @@ def test_main_cli_end_to_end(tmp_path, fake_run):
         assert c["tier"] in {"推荐", "待定", "不推荐"}
     # actions 三段式必须存在
     assert set(result["actions"].keys()) == {"recommend", "pending", "reject"}
+    assert result["meta"]["score_profile"]["id"] == "tech"
+
+
+def test_main_cli_uses_sales_profile_weights(tmp_path, fake_run):
+    job_name, encrypt_job_id, run_id, process_dir = fake_run
+    (process_dir / "screening_rules.json").write_text(json.dumps({
+        "job": {"query": job_name},
+        "score": {"greet_threshold": 70, "profile": "sales"},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    inp = tmp_path / "scores_sales.json"
+    out = tmp_path / "result_sales.json"
+    inp.write_text(json.dumps([
+        {
+            "name": "测试 A",
+            "geek_id": "gid_A_abc",
+            "school": "辽宁工业大学/车辆工程/本科",
+            "dims": {"edu": 0, "exp": 80, "skill": 65, "proj": 60, "major": 100},
+            "highlights": ["3 年 CATIA"],
+            "concerns": ["非车架本体"],
+        },
+    ], ensure_ascii=False), encoding="utf-8")
+
+    old_argv = sys.argv
+    try:
+        sys.argv = [
+            "score_resumes.py",
+            "--input", str(inp),
+            "--output", str(out),
+            "--job-name", job_name,
+            "--encrypt-job-id", encrypt_job_id,
+            "--run-id", run_id,
+        ]
+        sr.main()
+    finally:
+        sys.argv = old_argv
+
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert result["meta"]["score_profile"]["id"] == "sales"
+    dim_weights = [d["weight"] for d in result["candidates"][0]["dimensions"]]
+    assert dim_weights == [10, 35, 25, 20, 10]
 
 
 def test_main_cli_missing_run_id_exits(tmp_path, fake_run, capsys):

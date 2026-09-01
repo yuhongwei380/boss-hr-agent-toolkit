@@ -69,6 +69,36 @@ def test_load_rules_json(tmp_path: Path):
     assert rules.boss_experience == "3-5年"
     assert rules.max_details == 5
     assert "CATIA" in rules.keywords_any
+    assert rules.score_profile == "tech"
+    assert rules.greet_max == 10
+    assert rules.to_dict()["score"]["profile"] == "tech"
+
+
+def test_load_rules_greet_max(tmp_path: Path):
+    p = tmp_path / "rules.json"
+    p.write_text(json.dumps({
+        "job": {"query": "销售代表"},
+        "score": {"greet_threshold": 80, "greet_max": 5},
+    }, ensure_ascii=False), encoding="utf-8")
+    rules = load_rules(str(p))
+    assert rules.greet_max == 5
+    assert rules.to_dict()["score"]["greet_max"] == 5
+
+
+def test_load_rules_score_profile_sales(tmp_path: Path):
+    p = tmp_path / "rules.json"
+    p.write_text(json.dumps({
+        "job": {"query": "销售代表"},
+        "score": {"greet_threshold": 70, "profile": "sales"},
+    }, ensure_ascii=False), encoding="utf-8")
+    rules = load_rules(str(p))
+    assert rules.score_profile == "sales"
+    assert rules.to_dict()["score"]["profile"] == "sales"
+
+
+def test_score_profile_alias_intern():
+    rules = rules_from_dict({"score": {"profile": "实习生岗位"}})
+    assert rules.score_profile == "intern"
 
 
 def test_coarse_reject_degree_and_years():

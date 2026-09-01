@@ -70,7 +70,7 @@ boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 - 一次完整的新筛选任务；
 - start → confirm → fetch → score → report；
 - `start --rules` 按规则自动 confirm，接着 fetch 点「推荐」Tab / 能映射的 BOSS 筛选器 / 卡片粗筛 / 点击详情对照 JD；
-- 用户明确要求时执行 greet（**当前暂时禁用**：即使明确批准也不执行，见铁律 10）。
+- 用户明确要求时执行 greet。
 
 **不支持**：
 
@@ -89,7 +89,7 @@ boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | `boss-hr fetch --count N` | 拉候选人列表 + 下载简历。有规则时先切到本次岗位、点筛选器、粗筛卡片、再点开详情 |
 | `boss-hr score` | 评分协调（一次返回 1 位候选人） |
 | `boss-hr report` | 生成 HTML 报告 |
-| `boss-hr greet` | 给 ≥70 分候选人打招呼（**暂时禁用**，返回 `greet_disabled`，不点击） |
+| `boss-hr greet` | 给 ≥阈值 的候选人打招呼（默认 70；需用户明确批准，report 不自动调用） |
 | `boss-hr status` | 读 `runs/<run_id>/run.json` + process 目录 |
 
 **禁止调用旧脚本**：`boss_jd.py` / `confirm_run.py` / `recommend_list.py` /
@@ -235,9 +235,11 @@ LLM 循环：
 
 **单候选人约束**：每次 `score` 只处理一位候选人。LLM 不循环写多位。
 
-**评分不改**：`total` 由 5 维度 weighted（edu 25% / exp 25% / skill 25% /
-proj 15% / major 10%）算；tier ≥70 推荐 / 60-69 待定 / <60 不推荐。
+**评分权重**：`total` 由 5 维度加权。默认技术类（edu 25% / exp 25% / skill 25% /
+proj 15% / major 10%）。规则里 `score.profile` 为 `sales` 或 `intern` 时换权重。
+tier ≥70 推荐 / 60-69 待定 / <60 不推荐。
 edu 由 `score_resumes` 用 `school_tier` 强制覆盖，不接受 LLM 赋值。
+评分口径跟所选岗位类型走：销售看业绩与客户，实习生把课设/实习当经验，不要用职场年限卡应届。
 
 ### 4. 报告：`boss-hr report`
 
@@ -254,16 +256,22 @@ boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 
 把 `report_file` 路径告诉用户，并打开报告里的「建议打招呼排行榜」。**report 不自动调 greet**。
 
-### 5. 打招呼：`boss-hr greet`（暂时禁用）
+### 5. 打招呼：`boss-hr greet`（需用户明确批准）
 
-**即使有用户明确批准，当前也不执行 `boss-hr greet`。** 报告只展示「建议打招呼排行榜」。若用户要求打招呼，告知「打招呼已暂时关闭」，不要重试该命令。
-
-命令仍在公开列表中；若被误调，会返回 `status=greet_disabled`、`next_action=done`，**不启浏览器、不点击发送**。
+**只有用户明确要求「打招呼」或「招呼这几个人」时**才执行。report 不自动调用。
 
 ```bash
-# 暂时不要跑。恢复前即使执行也不会发送：
-boss-hr greet --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
+boss-hr greet --job-name "<>" --encrypt-job-id "<>" --run-id "<>" \
+  [--threshold 70] [--max 10] [--only-names "张三,李四"] [--dry-run]
 ```
+
+`--threshold` 用规则里的 `greet_threshold`（默认 70），`--max` 用规则里的 `greet_max`（默认 10）。总分按所选岗位类型的 5 项加权（默认技术类：学历 25% + 工作经验 25% + 专业技能 25% + 项目经历 15% + 专业匹配 10%）。≥70 推荐 / 60–69 待定 / <60 不推荐。
+
+**安全约束**：
+
+- 不得降低阈值、不得改分数、不得强制点名不推荐候选人发送；
+- 默认不招呼低于阈值的人；
+- 单 run `finished=true` 仅在 `greeted >= 1` 且 `maybe_finish` 成功时被设置。
 
 ### 6. 状态查询：`boss-hr status`
 
@@ -286,7 +294,7 @@ boss-hr status --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | 7 | 禁止创建 `spec_*.json` 模板 |
 | 8 | 禁止直接调旧业务脚本（boss_jd / confirm_run / recommend_* / score_* / generate_html_report / auto_greet） |
 | 9 | 禁止调 `cli_runner` 或 `shared.cli_runner.run_python_cli` |
-| 10 | 暂时禁用 greet：即使有用户明确批准也不执行 |
+| 10 | 禁止自动 greet（必须用户明确批准） |
 | 11 | 禁止 continue / batch / 多批累计 |
 | 12 | 禁止为测试而降低阈值、篡改评分 |
 
@@ -304,7 +312,6 @@ boss-hr status --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | `waiting_llm` | score 需要 LLM 评一位 | 读 input_file、评、写 output_file、**再次调** `boss-hr score` |
 | `scoring_complete` | 评分收尾完成 | 进入 report |
 | `report_ready` | HTML 报告已生成 | 把 `report_file` 告诉用户；**不**自动 greet |
-| `greet_disabled` | 打招呼已暂时关闭 | 告知用户；不要重试 greet |
 | `greet_complete` | 本次 greet 命令结束 | 任务结束 |
 | （任意 `ok=false`） | 错误 | 见下方错误处理 |
 

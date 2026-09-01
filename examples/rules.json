@@ -23,7 +23,9 @@
     "list_count": 40,
     "max_details": 10
   },
-  "score": {
-    "greet_threshold": 70
-  }
+    "score": {
+        "greet_threshold": 70,
+        "greet_max": 10,
+        "profile": "tech"
+    }
 }

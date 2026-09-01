@@ -39,9 +39,8 @@ from boss_hr.adapters import legacy_runner
 from boss_hr.adapters.legacy_runner import legacy_error, try_extract_blocked_message
 from boss_hr.adapters.browser_environment import ensure_browser_ready
 
-# 暂时关闭真实打招呼。生产默认 False；单测通过 BOSS_HR_GREET_ENABLED=1 打开。
-# 人工恢复：环境变量 BOSS_HR_GREET_ENABLED=1
-GREET_ENABLED = False
+# 生产默认开启。紧急关闭：环境变量 BOSS_HR_GREET_ENABLED=0
+GREET_ENABLED = True
 
 
 def is_greet_enabled() -> bool:
@@ -62,6 +61,20 @@ def _greet_log_path(job_name: str, eid: str, run_id: str) -> str:
     from shared.output_manager import JobOutputManager
     out = JobOutputManager(job_name, encrypt_job_id=eid, run_id=run_id, lazy=True)
     return os.path.join(out.runs_dir, run_id, "process", "greet_log.json")
+
+
+def _greet_max_from_rules(job_name: str, eid: str, run_id: str) -> int:
+    """本次 run 的 screening_rules.json 里的 greet_max；没有则 10。"""
+    try:
+        from shared.output_manager import JobOutputManager
+        from screening_rules import load_rules
+        out = JobOutputManager(job_name, encrypt_job_id=eid, run_id=run_id, lazy=True)
+        path = out.get_process_path("screening_rules.json")
+        if os.path.isfile(path):
+            return max(1, int(load_rules(path).greet_max))
+    except Exception:
+        pass
+    return 10
 
 
 def _read_greet_log(path: str) -> Optional[dict]:
@@ -103,7 +116,7 @@ def _pre_check(job_name: str, eid: str, run_id: str
 
 def greet_candidates(*, job_name: str, encrypt_job_id: Optional[str],
                      run_id: Optional[str], only_names: Optional[str] = None,
-                     threshold: float = 70.0, max_count: int = 10,
+                     threshold: float = 70.0, max_count: Optional[int] = None,
                      dry_run: bool = False) -> CommandResult:
     """greet 命令业务实现。
 
@@ -115,8 +128,8 @@ def greet_candidates(*, job_name: str, encrypt_job_id: Optional[str],
       5) 成功 → 读 greet_log.json 取 summary（可能不存在 → no_candidates）
       6) 返回 greet_complete
 
-    打招呼已暂时关闭（GREET_ENABLED=False）：不启浏览器、不点子进程、
-    不写 greet_log；返回 status=greet_disabled。设 BOSS_HR_GREET_ENABLED=1 可恢复。
+    打招呼关闭时（GREET_ENABLED=False 或 BOSS_HR_GREET_ENABLED=0）：不启浏览器、不点子进程、
+    不写 greet_log；返回 status=greet_disabled。
     """
     if not is_greet_enabled():
         eid = _resolve_encrypt_job_id(encrypt_job_id)
@@ -183,6 +196,8 @@ def greet_candidates(*, job_name: str, encrypt_job_id: Optional[str],
     # 构造子脚本参数。
     # --only-names 模式下旧脚本自己会把 threshold 置 0、max 置名单长度
     # （auto_greet.py:821-828），这里只透传原始参数，不重复该逻辑。
+    if max_count is None:
+        max_count = _greet_max_from_rules(job_name, eid, run_id)
     args_list = [
         "--job-name", job_name,
         "--encrypt-job-id", eid,

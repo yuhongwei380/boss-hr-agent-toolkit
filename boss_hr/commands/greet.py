@@ -21,12 +21,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="score 阈值，≥ 阈值的候选人会被招呼（默认 70）",
     )
     parser.add_argument(
-        "--max", type=int, default=10, dest="max_count",
-        help="最多打招呼人数（默认 10）",
+        "--max", type=int, default=None, dest="max_count",
+        help="最多打招呼人数（不传则用规则里的 greet_max，默认 10）",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
-        help="干跑：只定位不点击。注意：打招呼目前默认关闭，本命令不会发送。",
+        help="干跑：只定位不点击",
     )
 
 

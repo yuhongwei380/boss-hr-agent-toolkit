@@ -35,6 +35,7 @@ from screening_rules import (  # noqa: E402
     rules_from_dict,
     save_rules,
 )
+from score_profiles import get_profile, normalize_profile_id  # noqa: E402
 
 INDEX_HTML = _HERE / "index.html"
 DEFAULT_PORT = 8765
@@ -65,6 +66,8 @@ EMPTY_FORM: dict[str, Any] = {
     "list_count": 40,
     "max_details": 10,
     "greet_threshold": 70,
+    "greet_max": 10,
+    "score_profile": "tech",
 }
 
 
@@ -164,6 +167,8 @@ def form_from_rules_dict(raw: dict) -> dict[str, Any]:
         "list_count": download.get("list_count") or 40,
         "max_details": download.get("max_details") or 10,
         "greet_threshold": score.get("greet_threshold") or 70,
+        "greet_max": score.get("greet_max") or 10,
+        "score_profile": normalize_profile_id(score.get("profile") or score.get("score_profile")),
     }
 
 
@@ -251,14 +256,34 @@ def rules_payload_for_job(form: dict, job: dict) -> dict:
             "list_count": form.get("list_count") or 40,
             "max_details": form.get("max_details") or 10,
         },
-        "score": {"greet_threshold": form.get("greet_threshold") or 70},
+        "score": {
+            "greet_threshold": form.get("greet_threshold") or 70,
+            "greet_max": form.get("greet_max") or 10,
+            "profile": normalize_profile_id(form.get("score_profile")),
+        },
     }
 
 
-def build_agent_prompt(jobs: list[dict]) -> str:
+def build_agent_prompt(
+    jobs: list[dict],
+    greet_threshold: int = 70,
+    greet_max: int = 10,
+    score_profile: str = "tech",
+) -> str:
+    profile = get_profile(score_profile)
+    pct = profile.weights_pct
+    weight_line = (
+        f"学历 {pct['edu']}% / 经验 {pct['exp']}% / 技能 {pct['skill']}% "
+        f"/ 项目 {pct['proj']}% / 专业 {pct['major']}%"
+    )
     lines = [
         "请按这些规则开始 BOSS 推荐牛人筛选，不要自动打招呼。",
-        "打招呼已暂时关闭，不要调用 boss-hr greet。",
+        "报告完成后把建议打招呼排行榜给用户看。"
+        f"只有用户明确说打招呼时，才调用 boss-hr greet --threshold {int(greet_threshold)} --max {int(greet_max)}。",
+        "",
+        f"评分标准：{profile.label}。总分权重：{weight_line}。",
+        f"LLM 评经验、技能、项目、专业时：{profile.llm_guide}",
+        "学历由系统按学校表打分，不要自己改 edu。",
         "",
     ]
     if len(jobs) == 1:
@@ -345,11 +370,18 @@ def save_config(raw: dict, output_root: Optional[str] = None) -> dict[str, Any]:
         "list_count": raw.get("list_count") or 40,
         "max_details": raw.get("max_details") or 10,
         "greet_threshold": raw.get("greet_threshold") or 70,
+        "greet_max": raw.get("greet_max") or 10,
+        "score_profile": normalize_profile_id(raw.get("score_profile")),
     }
     bundle_file(output_root).write_text(
         json.dumps(form, ensure_ascii=False, indent=2), encoding="utf-8",
     )
-    prompt = build_agent_prompt(saved)
+    prompt = build_agent_prompt(
+        saved,
+        greet_threshold=form["greet_threshold"],
+        greet_max=form["greet_max"],
+        score_profile=form["score_profile"],
+    )
     prompt_file(output_root).write_text(prompt, encoding="utf-8")
     return {
         "ok": True,
@@ -361,6 +393,8 @@ def save_config(raw: dict, output_root: Optional[str] = None) -> dict[str, Any]:
         "list_count": form["list_count"],
         "max_details": form["max_details"],
         "greet_threshold": form["greet_threshold"],
+        "greet_max": form["greet_max"],
+        "score_profile": form["score_profile"],
     }
 
 

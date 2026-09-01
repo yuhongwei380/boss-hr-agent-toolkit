@@ -57,6 +57,7 @@ def test_save_writes_rules_and_prompt(tmp_path):
     assert rules.job_query == "车架工程师"
     assert rules.jd == "需要 CATIA"
     assert rules.max_details == 6
+    assert rules.score_profile == "tech"
     prompt = Path(result["rules_path"]).with_name("agent-prompt.txt").read_text(encoding="utf-8")
     assert "不要自动打招呼" in prompt
     assert "车架工程师" in prompt
@@ -89,17 +90,59 @@ def test_save_multiple_jobs_writes_each_rules_file(tmp_path):
     prompt = (tmp_path / "_config" / "agent-prompt.txt").read_text(encoding="utf-8")
     assert "多个岗位" in prompt
     assert "车架工程师" in prompt and "结构工程师" in prompt
-    assert "不要调用 boss-hr greet" in prompt
+    assert "明确说打招呼" in prompt
 
 
-def test_build_agent_prompt_contains_path_and_no_greet():
+def test_build_agent_prompt_contains_path_and_no_auto_greet():
     text = config_serve.build_agent_prompt([
         {"rules_path": r"D:\rules.json", "query": "结构工程师"},
     ])
     assert r"D:\rules.json" in text
     assert "结构工程师" in text
     assert "不要自动打招呼" in text
-    assert "不要调用 boss-hr greet" in text
+    assert "明确说打招呼" in text
+    assert "--threshold 70" in text
+    assert "--max 10" in text
+    assert "技术类岗位" in text
+    assert "学历 25%" in text
+
+
+def test_save_sales_profile_writes_rules_and_prompt(tmp_path):
+    result = config_serve.save_config(
+        {
+            "jobs": [{"query": "销售代表", "jd": "负责客户开发"}],
+            "education": ["本科"],
+            "score_profile": "sales",
+            "greet_threshold": 70,
+        },
+        str(tmp_path),
+    )
+    rules = load_rules(result["rules_path"])
+    assert rules.score_profile == "sales"
+    saved = json.loads(Path(result["rules_path"]).read_text(encoding="utf-8"))
+    assert saved["score"]["profile"] == "sales"
+    prompt = Path(result["rules_path"]).with_name("agent-prompt.txt").read_text(encoding="utf-8")
+    assert "销售类岗位" in prompt
+    assert "经验 35%" in prompt
+    assert "学历 10%" in prompt
+
+
+def test_save_greet_max_writes_rules_and_prompt(tmp_path):
+    result = config_serve.save_config(
+        {
+            "jobs": [{"query": "销售代表", "jd": "JD"}],
+            "education": ["本科"],
+            "greet_threshold": 75,
+            "greet_max": 5,
+        },
+        str(tmp_path),
+    )
+    rules = load_rules(result["rules_path"])
+    assert rules.greet_max == 5
+    assert rules.greet_threshold == 75
+    prompt = Path(result["rules_path"]).with_name("agent-prompt.txt").read_text(encoding="utf-8")
+    assert "--threshold 75" in prompt
+    assert "--max 5" in prompt
 
 
 def test_save_jobs_array_without_legacy_job_key(tmp_path):
@@ -168,7 +211,14 @@ def test_http_save_roundtrip(tmp_path):
         assert "不想要的人" in html
         assert "非全日制" in html
         assert "希望看到的技能或方向" in html
-        assert "job: { query: first.query" in html
+        assert "这个分数怎么算" in html
+        assert "评分标准" in html
+        assert "销售类岗位" in html
+        assert "实习生岗位" in html
+        assert "技术类岗位" in html
+        assert "看多少张简历卡片" in html
+        assert "最多点开多少份简历" in html
+        assert "最多给几个人打招呼" in html
     finally:
         httpd.shutdown()
         httpd.server_close()

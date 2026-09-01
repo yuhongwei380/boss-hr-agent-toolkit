@@ -33,3 +33,9 @@ def test_greet_disabled_skips_browser_and_legacy(monkeypatch):
     assert payload["data"]["disabled"] is True
     assert payload["data"]["greeted"] == 0
     assert res.exit_code == 0
+
+
+def test_greet_enabled_by_default_without_env(monkeypatch):
+    monkeypatch.delenv("BOSS_HR_GREET_ENABLED", raising=False)
+    from boss_hr.application.greet_service import is_greet_enabled
+    assert is_greet_enabled() is True

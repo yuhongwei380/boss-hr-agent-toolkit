@@ -7,7 +7,9 @@ description: |
   [boss-hr-auto](../boss-hr-auto/SKILL.md) → 统一 CLI `boss-hr score` 调用。
   本文档保留作为：评分规则参考 / LLM 提示词片段来源 / 算法实现文档。
 
-  **唯一方案**：5 维度 weighted 求和（edu 25% / exp 25% / skill 25% / proj 15% / major 10%），Tier 阈值 ≥70 推荐 / 60-69 待定 / <60 不推荐。
+  **默认方案**：5 维度加权求和。技术类岗位为 edu 25% / exp 25% / skill 25% / proj 15% / major 10%；
+  销售类、实习生岗位换权重，见规则文件 `score.profile`（`tech` / `sales` / `intern`）。
+  Tier 阈值默认 ≥70 推荐 / 60-69 待定 / <60 不推荐。
 ---
 
 # Resume Screener
@@ -45,7 +47,7 @@ python score_resumes.py --input _llm_scores.json --output screening_results.json
 
 - **LLM 评 4 维度最终分**：`exp / skill / proj / major` 全部由 LLM 真实分析完整简历后给出 0–100 的最终分（已综合考虑年限、对口度、实操深度、复杂度等）
 - **脚本只覆盖 1 维度**：用 `scripts/school_tier.py` 查表覆盖 `edu`
-- **公式重算**：5 维度 × 权重 = total（按 25/25/25/15/10）
+- **公式重算**：5 维度 × 权重 = total。默认技术类 25/25/25/15/10；`score.profile` 为 `sales` / `intern` 时换权重
 - **Tier 判定**：≥70 推荐 / 60-69 待定 / <60 不推荐
 - **通用**：不限岗位（任一 JD 都能用）
 
@@ -57,7 +59,7 @@ python score_resumes.py --input _llm_scores.json --output screening_results.json
 
 | 项 | 值 |
 |----|----|
-| 5 维度权重 | edu 25% / exp 25% / skill 25% / proj 15% / major 10% |
+| 5 维度权重 | 默认技术类 edu 25% / exp 25% / skill 25% / proj 15% / major 10%；销售类 10/35/25/20/10；实习生 30/10/20/20/20 |
 | Tier 阈值 | 推荐 ≥70 / 待定 60-69 / 不推荐 <60 |
 | 公式 | total = Σ (raw × weight) |
 | Tier 名称 | 推荐 / 待定 / 不推荐 |

@@ -320,6 +320,19 @@ def test_greet_defaults_threshold_70_max_10(greet_mocks):
     assert "--dry-run" not in p["flags"]
 
 
+def test_greet_max_from_screening_rules(greet_mocks):
+    """不传 --max 时用本次 run 规则里的 greet_max。"""
+    tmp_path, calls = greet_mocks
+    eid, rid, jn = "test_eid_g9c", "2026-08-03_120000", "g9c_job"
+    run_dir = _make_run(tmp_path, eid, rid, jn)
+    (run_dir / "process" / "screening_rules.json").write_text(json.dumps({
+        "score": {"greet_threshold": 70, "greet_max": 4},
+    }, ensure_ascii=False), encoding="utf-8")
+    _run_inproc(jn=jn, eid=eid, rid=rid)
+    p = _parse_args(calls[0]["args"])
+    assert int(p["max"]) == 4
+
+
 # ============================================================
 # 10-12. 缺必填参数
 # ============================================================
@@ -622,6 +635,6 @@ def test_greet_registered_in_cli_commands():
                        "--run-id", "2026-08-03_120000"])
     assert ns.command == "greet"
     assert ns.threshold == 70.0
-    assert ns.max_count == 10
+    assert ns.max_count is None
     assert ns.dry_run is False
     assert ns.only_names is None
