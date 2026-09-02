@@ -85,6 +85,17 @@ def test_load_rules_greet_max(tmp_path: Path):
     assert rules.to_dict()["score"]["greet_max"] == 5
 
 
+def test_load_rules_greet_max_zero(tmp_path: Path):
+    p = tmp_path / "rules.json"
+    p.write_text(json.dumps({
+        "job": {"query": "内核研发"},
+        "score": {"greet_threshold": 70, "greet_max": 0},
+    }, ensure_ascii=False), encoding="utf-8")
+    rules = load_rules(str(p))
+    assert rules.greet_max == 0
+    assert rules.to_dict()["score"]["greet_max"] == 0
+
+
 def test_load_rules_score_profile_sales(tmp_path: Path):
     p = tmp_path / "rules.json"
     p.write_text(json.dumps({
@@ -99,6 +110,21 @@ def test_load_rules_score_profile_sales(tmp_path: Path):
 def test_score_profile_alias_intern():
     rules = rules_from_dict({"score": {"profile": "实习生岗位"}})
     assert rules.score_profile == "intern"
+
+
+def test_load_rules_tech_stacks(tmp_path: Path):
+    p = tmp_path / "rules.json"
+    p.write_text(json.dumps({
+        "job": {"query": "内核研发"},
+        "score": {
+            "profile": "tech",
+            "tech_stacks": ["C++", "数据库内核", "Query Engine", "未知"],
+        },
+    }, ensure_ascii=False), encoding="utf-8")
+    rules = load_rules(str(p))
+    assert rules.tech_stacks == ["C++", "数据库内核", "Query Engine / Optimizer"]
+    dumped = rules.to_dict()["score"]["tech_stacks"]
+    assert dumped == ["C++", "数据库内核", "Query Engine / Optimizer"]
 
 
 def test_coarse_reject_degree_and_years():

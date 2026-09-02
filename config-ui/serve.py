@@ -35,7 +35,11 @@ from screening_rules import (  # noqa: E402
     rules_from_dict,
     save_rules,
 )
-from score_profiles import get_profile, normalize_profile_id  # noqa: E402
+from score_profiles import (  # noqa: E402
+    get_profile,
+    normalize_profile_id,
+    normalize_tech_stacks,
+)
 
 INDEX_HTML = _HERE / "index.html"
 DEFAULT_PORT = 8765
@@ -68,6 +72,7 @@ EMPTY_FORM: dict[str, Any] = {
     "greet_threshold": 70,
     "greet_max": 10,
     "score_profile": "tech",
+    "tech_stacks": [],
 }
 
 
@@ -91,6 +96,18 @@ TIER_FORM_ALIASES = {
     "民办": "民办本科",
     "民办/独立学院": "民办本科",
 }
+
+
+def _int_or_default(value: Any, default: int) -> int:
+    """空值用默认；0 要保留（例如 greet_max=0 表示不自动打招呼）。"""
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    m = re.search(r"-?\d+", str(value))
+    return int(m.group(0)) if m else default
 
 
 def _as_list(value: Any) -> list[str]:
@@ -176,9 +193,10 @@ def form_from_rules_dict(raw: dict) -> dict[str, Any]:
         "years_max": coarse.get("years_max") if coarse.get("years_max") not in (None, "") else 10,
         "list_count": download.get("list_count") or 40,
         "max_details": download.get("max_details") or 10,
-        "greet_threshold": score.get("greet_threshold") or 70,
-        "greet_max": score.get("greet_max") or 10,
+        "greet_threshold": _int_or_default(score.get("greet_threshold"), 70),
+        "greet_max": max(0, _int_or_default(score.get("greet_max"), 10)),
         "score_profile": normalize_profile_id(score.get("profile") or score.get("score_profile")),
+        "tech_stacks": normalize_tech_stacks(score.get("tech_stacks") or score.get("tech_stack")),
     }
 
 
@@ -267,9 +285,10 @@ def rules_payload_for_job(form: dict, job: dict) -> dict:
             "max_details": form.get("max_details") or 10,
         },
         "score": {
-            "greet_threshold": form.get("greet_threshold") or 70,
-            "greet_max": form.get("greet_max") or 10,
+            "greet_threshold": _int_or_default(form.get("greet_threshold"), 70),
+            "greet_max": max(0, _int_or_default(form.get("greet_max"), 10)),
             "profile": normalize_profile_id(form.get("score_profile")),
+            "tech_stacks": normalize_tech_stacks(form.get("tech_stacks")),
         },
     }
 
@@ -279,6 +298,7 @@ def build_agent_prompt(
     greet_threshold: int = 70,
     greet_max: int = 10,
     score_profile: str = "tech",
+    tech_stacks: Optional[list] = None,
 ) -> str:
     profile = get_profile(score_profile)
     pct = profile.weights_pct
@@ -286,17 +306,38 @@ def build_agent_prompt(
         f"学历 {pct['edu']}% / 经验 {pct['exp']}% / 技能 {pct['skill']}% "
         f"/ 项目 {pct['proj']}% / 专业 {pct['major']}%"
     )
+    stacks = normalize_tech_stacks(tech_stacks)
+    auto_greet = int(greet_max) > 0
     lines = [
         "请按这些规则开始 BOSS 推荐牛人筛选。",
-        "报告完成后把建议打招呼排行榜给用户看，接着调用 "
-        f"boss-hr greet --threshold {int(greet_threshold)} --max {int(greet_max)}。",
-        "不要超过 --max，不要招呼低于阈值的人。",
+    ]
+    if auto_greet:
+        lines.append(
+            "报告完成后把建议打招呼排行榜给用户看，接着调用 "
+            f"boss-hr greet --threshold {int(greet_threshold)} --max {int(greet_max)}。"
+        )
+        lines.append("不要超过 --max，不要招呼低于阈值的人。")
+    else:
+        lines.append(
+            "报告完成后把建议打招呼排行榜给用户看。"
+            "最多打招呼人数为 0，不要调用 boss-hr greet，不要自动打招呼。"
+        )
+    lines.extend([
         "",
         f"评分标准：{profile.label}。总分权重：{weight_line}。",
         f"LLM 评经验、技能、项目、专业时：{profile.llm_guide}",
         "学历由系统按学校表打分，不要自己改 edu。",
-        "",
-    ]
+    ])
+    if profile.id == "tech":
+        if stacks:
+            lines.append(
+                "本岗位核心技术栈：" + "、".join(stacks) + "。"
+                "技能分必须对照这些栈的覆盖与使用深度，不要只看关键词。"
+                "核心技术栈严重不匹配则技能分不得打高。"
+            )
+        else:
+            lines.append("本岗位未勾选核心技术栈，技能分按 JD 提取 Must-have。")
+    lines.append("")
     if len(jobs) == 1:
         item = jobs[0]
         query = item["query"]
@@ -308,7 +349,12 @@ def build_agent_prompt(
             f"用 boss-hr start \"{query}\" --rules \"{path}\"。"
             f"若返回 waiting_user_login，让我在专用浏览器扫码后再重试同一条 start。"
             f"ready_to_fetch 后用返回的 job_name / encrypt_job_id / run_id 跑 "
-            f"fetch（同一 --rules）→ score 循环到 scoring_complete → report → greet。"
+            + (
+                "fetch（同一 --rules）→ score 循环到 scoring_complete → report。"
+                "不要 greet。"
+                if int(greet_max) <= 0 else
+                "fetch（同一 --rules）→ score 循环到 scoring_complete → report → greet。"
+            )
         )
         return "\n".join(lines)
 
@@ -322,7 +368,11 @@ def build_agent_prompt(
         "对每个岗位依次：boss-hr start \"<岗位>\" --rules \"<该岗位规则文件>\"；"
         "waiting_user_login 则让我扫码后重试同一条 start；"
         "ready_to_fetch 后用该次返回的 job_name / encrypt_job_id / run_id 跑 "
-        "fetch（同一 --rules）→ score 循环 → report → greet。做完一个再做下一个。"
+        + (
+            "fetch（同一 --rules）→ score 循环 → report。不要 greet。做完一个再做下一个。"
+            if int(greet_max) <= 0 else
+            "fetch（同一 --rules）→ score 循环 → report → greet。做完一个再做下一个。"
+        )
     )
     return "\n".join(lines)
 
@@ -380,9 +430,10 @@ def save_config(raw: dict, output_root: Optional[str] = None) -> dict[str, Any]:
         "years_max": raw.get("years_max"),
         "list_count": raw.get("list_count") or 40,
         "max_details": raw.get("max_details") or 10,
-        "greet_threshold": raw.get("greet_threshold") or 70,
-        "greet_max": raw.get("greet_max") or 10,
+        "greet_threshold": _int_or_default(raw.get("greet_threshold"), 70),
+        "greet_max": max(0, _int_or_default(raw.get("greet_max"), 10)),
         "score_profile": normalize_profile_id(raw.get("score_profile")),
+        "tech_stacks": normalize_tech_stacks(raw.get("tech_stacks")),
     }
     bundle_file(output_root).write_text(
         json.dumps(form, ensure_ascii=False, indent=2), encoding="utf-8",
@@ -392,6 +443,7 @@ def save_config(raw: dict, output_root: Optional[str] = None) -> dict[str, Any]:
         greet_threshold=form["greet_threshold"],
         greet_max=form["greet_max"],
         score_profile=form["score_profile"],
+        tech_stacks=form["tech_stacks"],
     )
     prompt_file(output_root).write_text(prompt, encoding="utf-8")
     return {
@@ -406,6 +458,7 @@ def save_config(raw: dict, output_root: Optional[str] = None) -> dict[str, Any]:
         "greet_threshold": form["greet_threshold"],
         "greet_max": form["greet_max"],
         "score_profile": form["score_profile"],
+        "tech_stacks": form["tech_stacks"],
     }
 
 

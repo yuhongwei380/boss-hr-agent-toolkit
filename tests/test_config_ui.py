@@ -107,6 +107,17 @@ def test_build_agent_prompt_contains_path_and_auto_greet_after_report():
     assert "明确说打招呼" not in text
     assert "技术类岗位" in text
     assert "学历 25%" in text
+    assert "未勾选核心技术栈" in text
+
+
+def test_build_agent_prompt_lists_selected_tech_stacks():
+    text = config_serve.build_agent_prompt(
+        [{"rules_path": r"D:\rules.json", "query": "内核研发"}],
+        tech_stacks=["C++", "数据库内核"],
+    )
+    assert "本岗位核心技术栈：C++、数据库内核" in text
+    assert "不要只看关键词" in text
+    assert "未勾选核心技术栈" not in text
 
 
 def test_save_sales_profile_writes_rules_and_prompt(tmp_path):
@@ -129,6 +140,25 @@ def test_save_sales_profile_writes_rules_and_prompt(tmp_path):
     assert "学历 10%" in prompt
 
 
+def test_save_tech_stacks_writes_rules_and_prompt(tmp_path):
+    result = config_serve.save_config(
+        {
+            "jobs": [{"query": "内核研发", "jd": "C++ 数据库内核"}],
+            "education": ["本科"],
+            "score_profile": "tech",
+            "tech_stacks": ["C++", "数据库内核", "Query Engine / Optimizer", "不是清单里的"],
+        },
+        str(tmp_path),
+    )
+    rules = load_rules(result["rules_path"])
+    assert rules.tech_stacks == ["C++", "数据库内核", "Query Engine / Optimizer"]
+    saved = json.loads(Path(result["rules_path"]).read_text(encoding="utf-8"))
+    assert saved["score"]["tech_stacks"] == ["C++", "数据库内核", "Query Engine / Optimizer"]
+    prompt = Path(result["rules_path"]).with_name("agent-prompt.txt").read_text(encoding="utf-8")
+    assert "本岗位核心技术栈：C++、数据库内核、Query Engine / Optimizer" in prompt
+    assert result["tech_stacks"] == ["C++", "数据库内核", "Query Engine / Optimizer"]
+
+
 def test_save_greet_max_writes_rules_and_prompt(tmp_path):
     result = config_serve.save_config(
         {
@@ -145,6 +175,36 @@ def test_save_greet_max_writes_rules_and_prompt(tmp_path):
     prompt = Path(result["rules_path"]).with_name("agent-prompt.txt").read_text(encoding="utf-8")
     assert "--threshold 75" in prompt
     assert "--max 5" in prompt
+
+
+def test_save_greet_max_zero_skips_auto_greet_in_prompt(tmp_path):
+    result = config_serve.save_config(
+        {
+            "jobs": [{"query": "内核研发", "jd": "JD"}],
+            "education": ["本科"],
+            "greet_threshold": 70,
+            "greet_max": 0,
+        },
+        str(tmp_path),
+    )
+    rules = load_rules(result["rules_path"])
+    assert rules.greet_max == 0
+    prompt = Path(result["rules_path"]).with_name("agent-prompt.txt").read_text(encoding="utf-8")
+    assert "不要调用 boss-hr greet" in prompt
+    assert "不要自动打招呼" in prompt
+    assert "接着调用" not in prompt
+    assert "report → greet" not in prompt
+    assert result["greet_max"] == 0
+
+
+def test_build_agent_prompt_greet_max_zero():
+    text = config_serve.build_agent_prompt(
+        [{"rules_path": r"D:\rules.json", "query": "内核研发"}],
+        greet_max=0,
+    )
+    assert "不要自动打招呼" in text
+    assert "boss-hr greet" in text
+    assert "接着调用" not in text
 
 
 def test_save_school_tier_erben_writes_min(tmp_path):
@@ -233,14 +293,26 @@ def test_http_save_roundtrip(tmp_path):
         assert "不想要的人" in html
         assert "非全日制" in html
         assert "希望看到的技能或方向" in html
-        assert "这个分数怎么算" in html
+        assert "建议打招呼分数" in html
+        assert "这个分数怎么算" not in html
+        assert "核心技术栈匹配" in html
+        assert "垂直领域" in html
+        assert "AI 工程能力" in html
         assert "评分标准" in html
         assert "销售类岗位" in html
         assert "实习生岗位" in html
         assert "技术类岗位" in html
+        assert "核心技术栈" in html
+        assert "C++" in html
+        assert "JavaScript / TypeScript" in html
+        assert "数据库内核" in html
+        assert "Query Engine / Optimizer" in html
+        assert "AI Coding" in html
         assert "看多少张简历卡片" in html
         assert "最多点开多少份简历" in html
         assert "最多给几个人打招呼" in html
+        assert "不自动打招呼" in html
+        assert "min=\"0\"" in html or 'min="0"' in html
         assert "报告后招呼" in html
         assert "自动发送" not in html
         assert "C9" in html

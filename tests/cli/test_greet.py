@@ -333,6 +333,22 @@ def test_greet_max_from_screening_rules(greet_mocks):
     assert int(p["max"]) == 4
 
 
+def test_greet_max_zero_from_rules_skips(greet_mocks):
+    tmp_path, calls = greet_mocks
+    eid, rid, jn = "test_eid_g9d", "2026-08-03_120000", "g9d_job"
+    run_dir = _make_run(tmp_path, eid, rid, jn)
+    (run_dir / "process" / "screening_rules.json").write_text(json.dumps({
+        "score": {"greet_threshold": 70, "greet_max": 0},
+    }, ensure_ascii=False), encoding="utf-8")
+    proc = _run_inproc(jn=jn, eid=eid, rid=rid)
+    assert proc.returncode == 0
+    p = json.loads(_decode(proc.stdout))
+    assert p["ok"] is True
+    assert p["status"] == "greet_skipped"
+    assert p["data"]["greeted"] == 0
+    assert calls == []
+
+
 # ============================================================
 # 10-12. 缺必填参数
 # ============================================================

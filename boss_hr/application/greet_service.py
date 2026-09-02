@@ -71,7 +71,7 @@ def _greet_max_from_rules(job_name: str, eid: str, run_id: str) -> int:
         out = JobOutputManager(job_name, encrypt_job_id=eid, run_id=run_id, lazy=True)
         path = out.get_process_path("screening_rules.json")
         if os.path.isfile(path):
-            return max(1, int(load_rules(path).greet_max))
+            return max(0, int(load_rules(path).greet_max))
     except Exception:
         pass
     return 10
@@ -179,6 +179,24 @@ def greet_candidates(*, job_name: str, encrypt_job_id: Optional[str],
             exit_code=ExitCode(rc),
         )
 
+    if max_count is None:
+        max_count = _greet_max_from_rules(job_name, eid, run_id)
+    if int(max_count) <= 0 and not only_names:
+        return ok(
+            status="greet_skipped",
+            run_id=run_id,
+            encrypt_job_id=eid,
+            job_name=job_name,
+            data={
+                "greeted": 0,
+                "skipped": True,
+                "reason": "greet_max=0",
+                "dry_run": dry_run,
+            },
+            next_action="done",
+            message="最多打招呼人数为 0，未发送任何招呼。",
+        )
+
     # v1.1.2: 自动启动 Edge + 登录态
     # v1.1.3: greet 保留 v1.1.2 旧轮询路径（wait_for_user_login=True，
     # 默认 20s）。start 由单一参数 --login-wait-seconds 推导，
@@ -196,8 +214,6 @@ def greet_candidates(*, job_name: str, encrypt_job_id: Optional[str],
     # 构造子脚本参数。
     # --only-names 模式下旧脚本自己会把 threshold 置 0、max 置名单长度
     # （auto_greet.py:821-828），这里只透传原始参数，不重复该逻辑。
-    if max_count is None:
-        max_count = _greet_max_from_rules(job_name, eid, run_id)
     args_list = [
         "--job-name", job_name,
         "--encrypt-job-id", eid,

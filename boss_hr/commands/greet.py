@@ -22,7 +22,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--max", type=int, default=None, dest="max_count",
-        help="最多打招呼人数（不传则用规则里的 greet_max，默认 10）",
+        help="最多打招呼人数（不传则用规则里的 greet_max，默认 10；0 表示不招呼）",
     )
     parser.add_argument(
         "--dry-run", action="store_true",

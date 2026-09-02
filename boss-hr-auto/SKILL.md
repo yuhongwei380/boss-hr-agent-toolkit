@@ -72,7 +72,7 @@ boss-hr greet  --job-name "<>" --encrypt-job-id "<>" --run-id "<>" \
 - 一次完整的新筛选任务；
 - start → confirm → fetch → score → report → greet；
 - `start --rules` 按规则自动 confirm，接着 fetch 点「推荐」Tab / 能映射的 BOSS 筛选器 / 卡片粗筛 / 点击详情对照 JD；
-- report 完成后按规则 `greet_threshold` / `greet_max` 调用 greet。
+- report 完成后：规则 `greet_max` 大于 0 时按 `greet_threshold` / `greet_max` 调用 greet；`greet_max` 为 0 则不招呼。
 
 **不支持**：
 
@@ -242,6 +242,7 @@ proj 15% / major 10%）。规则里 `score.profile` 为 `sales` 或 `intern` 时
 tier ≥70 推荐 / 60-69 待定 / <60 不推荐。
 edu 由 `score_resumes` 用 `school_tier` 强制覆盖，不接受 LLM 赋值。
 评分口径跟所选岗位类型走：销售看业绩与客户，实习生把课设/实习当经验，不要用职场年限卡应届。
+技术岗若规则 `score.tech_stacks` 非空，skill 必须对照这些核心技术栈评覆盖与使用深度，不要只看关键词；严重不匹配不得打高技能分。未勾选则仍按 JD 提取。
 
 ### 4. 报告：`boss-hr report`
 
@@ -256,11 +257,11 @@ boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
  "data": {"report_file": "<绝对路径>"}, "next_action": "done"}
 ```
 
-把 `report_file` 路径告诉用户，并打开报告里的「建议打招呼排行榜」。**有规则时接着调 greet**（`--threshold` / `--max` 用规则里的值）。
+把 `report_file` 路径告诉用户，并打开报告里的「建议打招呼排行榜」。**有规则且 `greet_max` 大于 0 时接着调 greet**（`--threshold` / `--max` 用规则里的值）。**`greet_max` 为 0 时不要调 greet。**
 
 ### 5. 打招呼：`boss-hr greet`（report 后按规则发送）
 
-报告完成后调用。人数不超过规则 `greet_max`，分数不低于 `greet_threshold`。
+报告完成后调用。人数不超过规则 `greet_max`，分数不低于 `greet_threshold`。**`greet_max` 为 0 时不要调用本命令。**
 
 ```bash
 boss-hr greet --job-name "<>" --encrypt-job-id "<>" --run-id "<>" \
@@ -297,7 +298,7 @@ boss-hr status --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | 7 | 禁止创建 `spec_*.json` 模板 |
 | 8 | 禁止直接调旧业务脚本（boss_jd / confirm_run / recommend_* / score_* / generate_html_report / auto_greet） |
 | 9 | 禁止调 `cli_runner` 或 `shared.cli_runner.run_python_cli` |
-| 10 | 有规则时 report 后按 greet_threshold / greet_max 调用 greet；禁止超人数、禁止降阈值 |
+| 10 | 有规则且 greet_max>0 时 report 后按 greet_threshold / greet_max 调用 greet；greet_max 为 0 则不调用 greet。禁止超人数、禁止降阈值 |
 | 11 | 禁止 continue / batch / 多批累计 |
 | 12 | 禁止为测试而降低阈值、篡改评分 |
 

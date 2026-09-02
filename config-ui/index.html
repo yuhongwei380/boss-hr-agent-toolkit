@@ -120,6 +120,17 @@
     padding: 8px 16px;
     font-size: 13px;
   }
+  .stack-groups { display: flex; flex-direction: column; gap: 12px; }
+  .stack-group .g-label {
+    display: block;
+    font-size: 12px;
+    color: var(--ink);
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .stack-chips .chip { font-size: 12px; padding: 5px 10px; min-height: 32px; }
+  .stack-count { font-size: 12px; color: var(--ink-3); margin: 8px 0 0; }
+  #tech-stack-block[hidden], #stack-row[hidden] { display: none !important; }
   .tag-box {
     display: flex;
     flex-wrap: wrap;
@@ -307,6 +318,8 @@
   .score-body th { color: var(--ink); font-weight: 600; }
   input::placeholder, textarea::placeholder { color: #000; opacity: 1; }
   .score-body ul { margin: 0 0 8px; padding-left: 1.2em; }
+  .score-body .row { margin: 10px 0 8px; }
+  .score-body input[type="number"] { font-size: 14px; }
   @media (max-width: 880px) {
     .wrap { grid-template-columns: 1fr; }
     .summary { position: static; }
@@ -319,7 +332,7 @@
     <main>
       <div class="brand">Boss HR</div>
       <h1>筛选配置</h1>
-      <p class="lede">可添加多个岗位，各自贴 JD。学历和经验可多选。保存后把提示词贴给 Agent。报告完成后按人数上限自动打招呼。</p>
+      <p class="lede">可添加多个岗位，各自贴 JD。学历和经验可多选。保存后把提示词贴给 Agent。人数上限大于 0 时报告后自动打招呼，填 0 则不招呼。</p>
 
       <section class="block">
         <h2>岗位</h2>
@@ -344,18 +357,14 @@
         <p class="hint">先选岗位类型，后面按对应权重打分。细则以后可以再改。</p>
         <div id="profile-chips" class="chips profile-chips" role="radiogroup" aria-label="评分标准"></div>
         <p class="note" id="profile-hint"></p>
-        <details class="score-help" open>
-          <summary>这个分数怎么算</summary>
-          <div class="score-body">
-            <p id="score-intro"></p>
-            <table>
-              <thead><tr><th>看什么</th><th>占多少</th><th>怎么打</th></tr></thead>
-              <tbody id="score-rows"></tbody>
-            </table>
-            <ul id="score-tiers"></ul>
-            <p>报告完成后按上面的分数线和人数上限自动打招呼，不会再问一次。</p>
+        <div id="tech-stack-block">
+          <div class="field">
+            <span>核心技术栈</span>
+            <p class="note">技术岗技能分按勾选项对照简历<strong>使用深度</strong>打，不要只看关键词。可多选。不勾则仍按 JD 提取。</p>
+            <div id="tech-stack-groups" class="stack-groups" role="group" aria-label="核心技术栈"></div>
+            <p class="stack-count" id="tech-stack-count"></p>
           </div>
-        </details>
+        </div>
       </section>
 
       <section class="block">
@@ -404,9 +413,23 @@
         </div>
         <div class="row">
           <label class="field"><span>建议打招呼分数</span><input id="greet_threshold" type="number" min="0" max="100" value="70"></label>
-          <label class="field"><span>最多给几个人打招呼</span><input id="greet_max" type="number" min="1" max="50" value="10"></label>
+          <label class="field"><span>最多给几个人打招呼</span><input id="greet_max" type="number" min="0" max="50" value="10"></label>
         </div>
-        <p class="note">报告完成后按这个分数线和人数上限自动发招呼，不会再问一次。</p>
+        <p class="note">人数填 <strong>0</strong> 则报告完成后不自动打招呼。大于 0 时按分数线和人数上限自动发招呼，不会再问一次。</p>
+      </section>
+
+      <section class="block">
+        <details class="score-help" open>
+          <summary>建议打招呼分数</summary>
+          <div class="score-body">
+            <p id="score-intro"></p>
+            <table>
+              <thead><tr><th>看什么</th><th>占多少</th><th>怎么打</th></tr></thead>
+              <tbody id="score-rows"></tbody>
+            </table>
+            <ul id="score-tiers"></ul>
+          </div>
+        </details>
       </section>
     </main>
 
@@ -416,6 +439,7 @@
       <ul class="funnel">
         <li><span class="k">岗位</span><span class="v" id="v-jobs">1</span></li>
         <li><span class="k">评分标准</span><span class="v" id="v-profile">技术类</span></li>
+        <li id="stack-row"><span class="k">技术栈</span><span class="v" id="v-stacks">未选</span></li>
         <li><span class="k">看简历卡片</span><span class="v" id="v-list">40</span></li>
         <li><span class="k">点开简历</span><span class="v" id="v-detail">10</span></li>
         <li><span class="k">建议打招呼</span><span class="v" id="v-greet">≥70</span></li>
@@ -433,21 +457,41 @@
 const EDU = ["大专", "本科", "硕士", "博士"];
 const EXP = ["在校/应届", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"];
 const TIER = ["不限", "C9", "985", "211", "双一流", "一本公办", "二本公办", "民办本科"];
+const TECH_STACK_GROUPS = [
+  { label: "语言 / 运行时", items: ["C++", "Java", "Python", "JavaScript / TypeScript", "Node.js", "Go", "Spark"] },
+  { label: "前端", items: ["React", "Vue"] },
+  { label: "数据 / 系统", items: ["SQL / 常见数据库", "图数据库", "数据库内核", "Query Engine / Optimizer", "Storage Engine", "分布式系统", "分布式数据库"] },
+  { label: "领域 / AI", items: ["图计算 / 图算法", "知识图谱", "性能优化", "风控 / 反欺诈", "AI 应用开发", "AI Agent", "AI Coding"] },
+];
+const TECH_STACKS = TECH_STACK_GROUPS.flatMap((g) => g.items);
 const SCORE_PROFILES = {
   tech: {
     id: "tech",
     label: "技术类岗位",
     short: "技术类",
-    summary: "学校、经验和硬技能并重，项目看是不是主力。",
+    summary: "最看重核心技术栈、垂直经验和项目深度。学历不是决定性因素。",
     weights: { edu: 25, exp: 25, skill: 25, proj: 15, major: 10 },
     recommend: 70,
     pending: 60,
+    intro: "总分 100。最看重<strong>核心技术栈</strong>、<strong>垂直/同赛道经验</strong>和<strong>项目深度</strong>。学历不是决定性因素；大厂只是加分，不能代替技术匹配；年限不是越长越好。上面勾选的技术栈按使用深度打（S 独立设计优化 / A 完整项目 / B 常规使用 / C 了解 / D 仅提及）。核心技术栈严重不匹配，即使总分不低也不能当高匹配。默认 <strong>70 分</strong> 作为建议打招呼分数，填 80 更严。",
+    weightUnit: "分",
     dims: [
-      ["学历（学校档次）", "edu", "系统查表：C9 100、985 92、211 85、双一流 77、一本公办 71。硕士/博士另有加成。"],
-      ["工作经验", "exp", "年限够不够、活跟这个岗对不对口、能不能独立扛一块。"],
-      ["专业技能", "skill", "JD 里的核心技能覆盖了多少、熟不熟。"],
-      ["项目经历", "proj", "项目跟本岗相关吗、难不难、Ta 是主力还是打杂。"],
-      ["专业匹配", "major", "大学专业是否对口。"],
+      ["学历与专业背景", 10, "最高学历、学校、是否计算机/软件/数学等相关。内核岗更看理论基础；应用岗工程能力可部分补学历。"],
+      ["工作年限与成熟度", 10, "看相关经验年限和能否独立扛一块，禁止年限越长分越高。"],
+      ["公司及团队背景", 10, "是否核心技术团队、是否真实研发。大厂只是环境信号，不能直接等同技术强。"],
+      ["核心技术栈匹配", 25, "对照上面勾选的栈，看覆盖和实际使用深度，不要只看关键词。Must-have 不会则不得高匹配。"],
+      ["垂直领域 / 同赛道", 20, "图数据库、数据库产品、知识图谱、图计算、风控、分布式等。竞品或同类产品明显加分。"],
+      ["项目复杂度与深度", 15, "是不是主力/Owner，有没有架构、性能优化、规模化证据。参与、协助、熟悉不能当高分。"],
+      ["岗位性质匹配", 5, "应用岗看全栈/交付；内核岗看底层/C++/长期基础软件。方向明显冲突要扣分。"],
+      ["AI 工程能力", 5, "AI Coding、LLM 接入、和业务系统结合。加分项，不是硬门槛。"],
+    ],
+    tiers: [
+      ["≥90", "极高匹配，优先推进"],
+      ["80–89", "高匹配，建议重点技术面"],
+      ["70–79", "比较匹配，建议进入技术面（默认打招呼线）"],
+      ["60–69", "部分匹配，先看报告"],
+      ["50–59", "匹配较低，除非有稀缺能力"],
+      ["<50", "差距明显，不建议推进"],
     ],
   },
   sales: {
@@ -492,6 +536,7 @@ const state = {
   experience: ["3-5年"],
   school_tier: [],
   score_profile: "tech",
+  tech_stacks: [],
 };
 
 function $(id) { return document.getElementById(id); }
@@ -683,6 +728,7 @@ function collect() {
     greet_threshold: Number($("greet_threshold").value),
     greet_max: Number($("greet_max").value),
     score_profile: state.score_profile || "tech",
+    tech_stacks: (state.tech_stacks || []).filter((s) => TECH_STACKS.indexOf(s) >= 0),
   };
 }
 
@@ -704,6 +750,7 @@ function applyForm(form) {
   $("greet_threshold").value = form.greet_threshold ?? 70;
   $("greet_max").value = form.greet_max ?? 10;
   state.score_profile = SCORE_PROFILES[form.score_profile] ? form.score_profile : "tech";
+  state.tech_stacks = (form.tech_stacks || []).filter((s) => TECH_STACKS.indexOf(s) >= 0);
   showJob();
   renderAll();
   paint();
@@ -715,6 +762,7 @@ function renderAll() {
   renderMinBarChips("tier-chips", TIER, state.school_tier, (v) => { state.school_tier = v; renderAll(); });
   renderProfileChips();
   renderScoreHelp();
+  renderTechStacks();
   tagInput("boss-kw", state.boss_keywords || [], (v) => { state.boss_keywords = v; renderAll(); }, "例如 CATIA，回车添加");
   tagInput("kw-any", state.keywords_any || [], (v) => { state.keywords_any = v; renderAll(); }, "例如 Java，回车添加");
   tagInput("kw-ex", state.keywords_exclude || [], (v) => { state.keywords_exclude = v; renderAll(); }, "例如 非全日制，回车添加");
@@ -743,10 +791,16 @@ function renderProfileChips() {
       markDirty();
       renderProfileChips();
       renderScoreHelp();
+      renderTechStacks();
       paint();
     });
     root.appendChild(btn);
   });
+}
+
+function dimWeightLabel(p, row) {
+  if (typeof row[1] === "number") return row[1] + (p.weightUnit || "分");
+  return p.weights[row[1]] + "%";
 }
 
 function renderScoreHelp() {
@@ -755,24 +809,76 @@ function renderScoreHelp() {
   if (hint) hint.textContent = p.summary + (p.extra ? " " + p.extra : "");
   const intro = $("score-intro");
   if (intro) {
-    intro.innerHTML = "对照完整简历和 JD 打出总分 0–100。当前按 <strong>"
+    intro.innerHTML = p.intro || (
+      "对照完整简历和 JD 打出总分 0–100。当前按 <strong>"
       + p.label + "</strong> 加权。默认 <strong>" + p.recommend
-      + " 分</strong> 才进入打招呼名单。填 80 更严，填 60 会把「待定」也招呼进去。";
+      + " 分</strong> 作为建议打招呼分数。填 80 更严，填 60 会把「待定」也招呼进去。"
+    );
   }
   const rows = $("score-rows");
   if (rows) {
     rows.innerHTML = p.dims.map((row) => (
-      "<tr><td>" + row[0] + "</td><td>" + p.weights[row[1]] + "%</td><td>" + row[2] + "</td></tr>"
+      "<tr><td>" + row[0] + "</td><td>" + dimWeightLabel(p, row) + "</td><td>" + row[2] + "</td></tr>"
     )).join("");
   }
   const tiers = $("score-tiers");
   if (tiers) {
-    const rec = p.recommend;
-    const pend = p.pending;
-    tiers.innerHTML = "<li><strong>≥" + rec + "</strong> 推荐打招呼</li>"
-      + "<li><strong>" + pend + "–" + (rec - 1) + "</strong> 待定，先看看报告</li>"
-      + "<li><strong>&lt;" + pend + "</strong> 不推荐</li>";
+    if (p.tiers) {
+      tiers.innerHTML = p.tiers.map((row) => (
+        "<li><strong>" + row[0] + "</strong> " + row[1] + "</li>"
+      )).join("");
+    } else {
+      const rec = p.recommend;
+      const pend = p.pending;
+      tiers.innerHTML = "<li><strong>≥" + rec + "</strong> 推荐打招呼</li>"
+        + "<li><strong>" + pend + "–" + (rec - 1) + "</strong> 待定，先看看报告</li>"
+        + "<li><strong>&lt;" + pend + "</strong> 不推荐</li>";
+    }
   }
+}
+
+function renderTechStacks() {
+  const root = $("tech-stack-groups");
+  const block = $("tech-stack-block");
+  const isTech = (state.score_profile || "tech") === "tech";
+  if (block) block.hidden = !isTech;
+  if (!root) return;
+  root.innerHTML = "";
+  const selected = state.tech_stacks || [];
+  TECH_STACK_GROUPS.forEach((group) => {
+    const wrap = document.createElement("div");
+    wrap.className = "stack-group";
+    const label = document.createElement("span");
+    label.className = "g-label";
+    label.textContent = group.label;
+    wrap.appendChild(label);
+    const chips = document.createElement("div");
+    chips.className = "chips stack-chips";
+    chips.setAttribute("role", "group");
+    chips.setAttribute("aria-label", group.label);
+    group.items.forEach((opt) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chip";
+      btn.textContent = opt;
+      btn.setAttribute("aria-pressed", selected.indexOf(opt) >= 0 ? "true" : "false");
+      btn.addEventListener("click", () => {
+        const next = selected.indexOf(opt) >= 0
+          ? selected.filter((x) => x !== opt)
+          : selected.concat(opt);
+        state.tech_stacks = next;
+        markDirty();
+        renderTechStacks();
+        paint();
+      });
+      chips.appendChild(btn);
+    });
+    wrap.appendChild(chips);
+    root.appendChild(wrap);
+  });
+  const n = selected.length;
+  const count = $("tech-stack-count");
+  if (count) count.textContent = n ? ("已选 " + n + " 项") : "未选。技能分将按 JD 提取。";
 }
 
 function paint() {
@@ -781,10 +887,17 @@ function paint() {
   $("stub-title").textContent = names.join("、") || "未命名岗位";
   $("v-jobs").textContent = String(state.jobs.length);
   $("v-profile").textContent = currentProfile().short;
+  const n = (state.tech_stacks || []).length;
+  const isTech = (state.score_profile || "tech") === "tech";
+  const row = $("stack-row");
+  if (row) row.hidden = !isTech;
+  const vStacks = $("v-stacks");
+  if (vStacks) vStacks.textContent = n ? (n + " 项") : "未选";
   $("v-list").textContent = $("list_count").value || "—";
   $("v-detail").textContent = $("max_details").value || "—";
   $("v-greet").textContent = "≥" + ($("greet_threshold").value || "70");
-  $("v-greet-max").textContent = ($("greet_max").value || "10") + "人";
+  const gm = Number($("greet_max").value);
+  $("v-greet-max").textContent = gm === 0 ? "不自动" : ((Number.isFinite(gm) ? String(gm) : "10") + "人");
 }
 
 let dirty = false;
@@ -873,6 +986,7 @@ $("btn-copy").addEventListener("click", async () => {
 state.boss_keywords = [];
 state.keywords_any = [];
 state.keywords_exclude = [];
+state.tech_stacks = [];
 showJob();
 renderAll();
 paint();

@@ -26,6 +26,7 @@
     "score": {
         "greet_threshold": 70,
         "greet_max": 10,
-        "profile": "tech"
+        "profile": "tech",
+        "tech_stacks": ["C++", "数据库内核", "Query Engine / Optimizer"]
     }
 }

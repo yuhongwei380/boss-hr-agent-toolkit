@@ -6,11 +6,104 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 DIM_KEYS = ("edu", "exp", "skill", "proj", "major")
 DEFAULT_PROFILE = "tech"
+
+# 技术岗核心技术栈清单（配置页多选；对照 jishu.md 应用研发 / 内核拆分）
+TECH_STACK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "语言 / 运行时",
+        (
+            "C++",
+            "Java",
+            "Python",
+            "JavaScript / TypeScript",
+            "Node.js",
+            "Go",
+            "Spark",
+        ),
+    ),
+    (
+        "前端",
+        ("React", "Vue"),
+    ),
+    (
+        "数据 / 系统",
+        (
+            "SQL / 常见数据库",
+            "图数据库",
+            "数据库内核",
+            "Query Engine / Optimizer",
+            "Storage Engine",
+            "分布式系统",
+            "分布式数据库",
+        ),
+    ),
+    (
+        "领域 / AI",
+        (
+            "图计算 / 图算法",
+            "知识图谱",
+            "性能优化",
+            "风控 / 反欺诈",
+            "AI 应用开发",
+            "AI Agent",
+            "AI Coding",
+        ),
+    ),
+)
+TECH_STACKS: tuple[str, ...] = tuple(
+    item for _, items in TECH_STACK_GROUPS for item in items
+)
+_STACK_BY_LOWER = {name.lower(): name for name in TECH_STACKS}
+_STACK_ALIASES = {
+    "js": "JavaScript / TypeScript",
+    "ts": "JavaScript / TypeScript",
+    "javascript": "JavaScript / TypeScript",
+    "typescript": "JavaScript / TypeScript",
+    "node": "Node.js",
+    "nodejs": "Node.js",
+    "cpp": "C++",
+    "c++": "C++",
+    "sql": "SQL / 常见数据库",
+    "常见数据库": "SQL / 常见数据库",
+    "query engine": "Query Engine / Optimizer",
+    "optimizer": "Query Engine / Optimizer",
+    "查询优化器": "Query Engine / Optimizer",
+    "storage": "Storage Engine",
+    "图计算": "图计算 / 图算法",
+    "图算法": "图计算 / 图算法",
+    "风控": "风控 / 反欺诈",
+    "反欺诈": "风控 / 反欺诈",
+    "反洗钱": "风控 / 反欺诈",
+    "ai": "AI 应用开发",
+    "ai coding": "AI Coding",
+}
+
+
+def normalize_tech_stacks(value: Any) -> list[str]:
+    """把表单/规则里的技术栈规范成清单中的名字，去重、丢掉未知项。"""
+    if not value:
+        return []
+    if isinstance(value, str):
+        raw = [p.strip() for p in re.split(r"[,，、]+", value) if p.strip()]
+    elif isinstance(value, (list, tuple)):
+        raw = [str(x).strip() for x in value if str(x).strip()]
+    else:
+        raw = [str(value).strip()]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        name = _STACK_BY_LOWER.get(item.lower()) or _STACK_ALIASES.get(item.lower())
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
 
 _ALIASES = {
     "tech": "tech",
@@ -62,13 +155,16 @@ PROFILES: dict[str, ScoreProfile] = {
         dim_help={
             "edu": "系统查表：C9 100、985 92、211 85、双一流 77、一本公办 71。硕士/博士另有加成。",
             "exp": "年限够不够、活跟这个岗对不对口、能不能独立扛一块。",
-            "skill": "JD 里的核心技能覆盖了多少、熟不熟。",
+            "skill": "对照勾选的核心技术栈，看覆盖和实际使用深度，不要只看关键词。",
             "proj": "项目跟本岗相关吗、难不难、Ta 是主力还是打杂。",
             "major": "大学专业是否对口。",
         },
         llm_guide=(
             "按技术岗口径评经验、技能、项目、专业。"
-            "经验看年限与岗位对口深度；技能看 JD 核心技术覆盖与熟练度；"
+            "经验看年限与岗位对口深度；"
+            "技能对照规则里勾选的核心技术栈（没有勾选则按 JD 提取），"
+            "看覆盖与使用深度（S 能独立设计优化，A 完整项目，B 常规使用，"
+            "C 了解，D 仅提及），不要只看关键词；核心技术栈严重不匹配则技能分不得打高；"
             "项目看相关度、难度、是否主力；专业看工科/对口专业。"
         ),
     ),

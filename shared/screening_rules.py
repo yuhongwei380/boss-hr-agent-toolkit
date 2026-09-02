@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from score_profiles import normalize_profile_id
+from score_profiles import normalize_profile_id, normalize_tech_stacks
 
 
 DEGREE_RANK = {
@@ -74,6 +74,7 @@ class ScreeningRules:
     greet_threshold: int = 70
     greet_max: int = 10
     score_profile: str = "tech"
+    tech_stacks: list[str] = field(default_factory=list)
     raw: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -103,6 +104,7 @@ class ScreeningRules:
                 "greet_threshold": self.greet_threshold,
                 "greet_max": self.greet_max,
                 "profile": self.score_profile,
+                "tech_stacks": list(self.tech_stacks),
             },
         }
 
@@ -198,8 +200,13 @@ def rules_from_dict(raw: dict) -> ScreeningRules:
     list_count = _as_int(download.get("list_count")) or 40
     max_details = _as_int(download.get("max_details")) or 10
     greet_threshold = _as_int(score.get("greet_threshold")) or 70
-    greet_max = _as_int(score.get("greet_max") or score.get("max")) or 10
+    greet_max = _as_int(score.get("greet_max") if score.get("greet_max") is not None else score.get("max"))
+    if greet_max is None:
+        greet_max = 10
+    else:
+        greet_max = max(0, greet_max)
     score_profile = normalize_profile_id(score.get("profile") or score.get("score_profile"))
+    tech_stacks = normalize_tech_stacks(score.get("tech_stacks") or score.get("tech_stack"))
 
     return ScreeningRules(
         job_query=str(job.get("query") or "").strip(),
@@ -220,8 +227,9 @@ def rules_from_dict(raw: dict) -> ScreeningRules:
         list_count=max(1, list_count),
         max_details=max(1, max_details),
         greet_threshold=greet_threshold,
-        greet_max=max(1, greet_max),
+        greet_max=greet_max,
         score_profile=score_profile,
+        tech_stacks=tech_stacks,
         raw=raw,
     )
 
